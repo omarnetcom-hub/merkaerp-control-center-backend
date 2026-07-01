@@ -9,25 +9,20 @@ router.get('/', authenticateToken, async (req, res) => {
   const { status, plan } = req.query;
   
   try {
-    let query = `
-      SELECT c.*, 
-             (SELECT COUNT(*) FROM cc_licenses l WHERE l.client_id = c.id AND l.status = 'active') as active_licenses,
-             (SELECT COUNT(*) FROM cc_installations i WHERE i.client_id = c.id) as installations_count
-      FROM cc_clients c
-    `;
+    let query = 'SELECT * FROM cc_clients';
     const params = [];
     
     if (status) {
-      query += ' WHERE c.status = ?';
+      query += ' WHERE status = ?';
       params.push(status);
     }
     
     if (plan) {
-      query += status ? ' AND c.plan = ?' : ' WHERE c.plan = ?';
+      query += status ? ' AND plan = ?' : ' WHERE plan = ?';
       params.push(plan);
     }
     
-    query += ' ORDER BY c.created_at DESC';
+    query += ' ORDER BY created_at DESC';
     
     const clients = await new Promise((resolve, reject) => {
       db.all(query, params, (err, rows) => {
@@ -57,18 +52,10 @@ router.get('/:id', authenticateToken, async (req, res) => {
   
   try {
     const client = await new Promise((resolve, reject) => {
-      db.get(
-        `SELECT c.*, 
-                (SELECT COUNT(*) FROM cc_licenses l WHERE l.client_id = c.id AND l.status = 'active') as active_licenses,
-                (SELECT COUNT(*) FROM cc_installations i WHERE i.client_id = c.id) as installations_count
-         FROM cc_clients c
-         WHERE c.id = ?`,
-        [id],
-        (err, row) => {
-          if (err) reject(err);
-          else resolve(row);
-        }
-      );
+      db.get('SELECT * FROM cc_clients WHERE id = ?', [id], (err, row) => {
+        if (err) reject(err);
+        else resolve(row);
+      });
     });
 
     if (!client) {
