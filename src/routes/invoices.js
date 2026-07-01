@@ -9,19 +9,15 @@ router.get('/', authenticateToken, async (req, res) => {
   const { status } = req.query;
   
   try {
-    let query = `
-      SELECT i.*, c.name as client_name 
-      FROM cc_invoices i
-      LEFT JOIN cc_clients c ON i.client_id = c.id
-    `;
+    let query = 'SELECT * FROM cc_invoices';
     const params = [];
     
     if (status) {
-      query += ' WHERE i.status = ?';
+      query += ' WHERE status = ?';
       params.push(status);
     }
     
-    query += ' ORDER BY i.created_at DESC';
+    query += ' ORDER BY created_at DESC';
     
     const invoices = await new Promise((resolve, reject) => {
       db.all(query, params, (err, rows) => {
@@ -51,17 +47,10 @@ router.get('/:id', authenticateToken, async (req, res) => {
   
   try {
     const invoice = await new Promise((resolve, reject) => {
-      db.get(
-        `SELECT i.*, c.name as client_name 
-         FROM cc_invoices i
-         LEFT JOIN cc_clients c ON i.client_id = c.id
-         WHERE i.id = ?`,
-        [id],
-        (err, row) => {
-          if (err) reject(err);
-          else resolve(row);
-        }
-      );
+      db.get('SELECT * FROM cc_invoices WHERE id = ?', [id], (err, row) => {
+        if (err) reject(err);
+        else resolve(row);
+      });
     });
 
     if (!invoice) {
