@@ -1,0 +1,124 @@
+openapi: 3.1.0
+info:
+  title: MerkaERP Server API
+  version: 0.2.0
+paths:
+  /api/v1/auth/login:
+    post:
+      summary: Autentica usuario y emite JWT/refresh token.
+  /api/v1/companies:
+    get:
+      summary: Lista empresas disponibles para el tenant.
+  /api/v1/branches:
+    get:
+      summary: Lista sucursales de la empresa activa.
+  /api/v1/sync/push:
+    post:
+      summary: Recibe eventos locales idempotentes desde SQLite.
+  /api/v1/sync/pull:
+    get:
+      summary: Devuelve eventos incrementales para una sucursal.
+  /api/v1/sync/conflicts:
+    get:
+      summary: Lista conflictos abiertos de sincronizacion.
+  /api/v1/events:
+    get:
+      summary: Consulta event store persistente con orden global.
+  /api/v1/events/replay:
+    post:
+      summary: Reprocesa cola de eventos, retries y proyecciones CQRS.
+  /api/v1/cqrs/executive-dashboard:
+    get:
+      summary: Consulta read model ejecutivo materializado por empresa y sucursal.
+  /api/v1/accounting/journal-entries:
+    post:
+      summary: Contabiliza un JournalEntry balanceado e inmutable.
+  /api/v1/inventory/stock-ledger/consume:
+    post:
+      summary: Consume inventario por FIFO, LIFO o promedio con evento transaccional.
+  /api/v1/licensing/status:
+    get:
+      summary: Evalua licencia, plan, modulos y limites SaaS.
+  /api/v1/telemetry/events:
+    post:
+      summary: Recibe eventos de telemetria estructurada.
+  /api/v1/workflows/templates:
+    get:
+      summary: Lista workflows disponibles.
+  /api/v1/rules/evaluate:
+    post:
+      summary: Evalua reglas comerciales, fiscales o de aprobacion.
+  /api/v1/ar/ledger:
+    get:
+      summary: Consulta ledger de cuentas por cobrar.
+  /api/v1/ar/aging:
+    get:
+      summary: Calcula aging de cartera.
+  /api/v1/ar/collect:
+    post:
+      summary: Aplica recaudos, settlement parcial y eventos InvoicePaidEvent.
+  /api/v1/ar/payment-promises:
+    post:
+      summary: Registra promesas de pago y seguimiento de cobranza.
+  /api/v1/ar/credit-limit:
+    post:
+      summary: Gestiona limites, riesgo y bloqueos de clientes.
+  /api/v1/ap/ledger:
+    get:
+      summary: Consulta ledger de proveedor.
+  /api/v1/ap/aging:
+    get:
+      summary: Calcula aging de cuentas por pagar.
+  /api/v1/ap/schedule-payment:
+    post:
+      summary: Programa pagos y forecast de tesoreria.
+  /api/v1/ap/pay:
+    post:
+      summary: Registra pagos parciales o totales a proveedores.
+  /api/v1/treasury/dashboard:
+    get:
+      summary: Expone posicion de tesoreria y flujo proyectado.
+  /api/v1/treasury/bank-accounts:
+    post:
+      summary: Crea cuentas bancarias operativas.
+  /api/v1/treasury/transfers:
+    post:
+      summary: Registra transferencias y movimientos bancarios.
+  /api/v1/bank/statements/import:
+    post:
+      summary: Importa extractos bancarios para conciliacion.
+  /api/v1/bank/reconcile:
+    post:
+      summary: Ejecuta matching automatico y conciliacion bancaria.
+  /api/v1/bank/unmatched:
+    get:
+      summary: Lista partidas no conciliadas.
+  /api/v1/tax/rules:
+    post:
+      summary: Configura reglas tributarias tenant-aware y country-aware.
+  /api/v1/tax/calculate:
+    post:
+      summary: Calcula impuestos y retenciones por documento.
+  /api/v1/assets/register:
+    get:
+      summary: Consulta registro de activos fijos.
+    post:
+      summary: Registra activos fijos y vida util.
+  /api/v1/assets/depreciate:
+    post:
+      summary: Ejecuta depreciacion contable y fiscal.
+  /api/v1/crm/pipeline:
+    get:
+      summary: Consulta pipeline comercial y funnel CRM.
+  /api/v1/crm/opportunities:
+    post:
+      summary: Crea oportunidades, timeline y notificaciones.
+  /api/v1/reports/definitions:
+    post:
+      summary: Define reportes con filtros dinamicos y formatos.
+  /api/v1/reports/generate:
+    post:
+      summary: Genera reportes PDF, Excel, JSON y materializaciones BI.
+  /api/v1/reports/materialized:
+    get:
+      summary: Consulta reportes materializados por empresa y sucursal.
