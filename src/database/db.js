@@ -128,6 +128,7 @@ function createTables() {
       `CREATE TABLE IF NOT EXISTS sync_events (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         event_id TEXT UNIQUE NOT NULL,
+        user_id TEXT NOT NULL,
         installation_id TEXT NOT NULL,
         table_name TEXT NOT NULL,
         operation TEXT NOT NULL,
@@ -151,6 +152,34 @@ function createTables() {
         created_at TEXT NOT NULL,
         resolved_at TEXT,
         FOREIGN KEY (installation_id) REFERENCES installations(id)
+      )`,
+      
+      // Tabla de usuarios
+      `CREATE TABLE IF NOT EXISTS users (
+        id TEXT PRIMARY KEY,
+        username TEXT UNIQUE NOT NULL,
+        email TEXT UNIQUE NOT NULL,
+        password_hash TEXT NOT NULL,
+        full_name TEXT,
+        company_id TEXT,
+        role TEXT DEFAULT 'user',
+        created_at TEXT NOT NULL,
+        updated_at TEXT,
+        last_login TEXT,
+        is_active INTEGER DEFAULT 1
+      )`,
+      
+      // Tabla de sesiones de usuario
+      `CREATE TABLE IF NOT EXISTS user_sessions (
+        id TEXT PRIMARY KEY,
+        user_id TEXT NOT NULL,
+        token TEXT UNIQUE NOT NULL,
+        device_info TEXT,
+        ip_address TEXT,
+        created_at TEXT NOT NULL,
+        expires_at TEXT NOT NULL,
+        is_active INTEGER DEFAULT 1,
+        FOREIGN KEY (user_id) REFERENCES users(id)
       )`
     ];
 
@@ -189,7 +218,12 @@ function createIndexes() {
       'CREATE INDEX IF NOT EXISTS idx_sync_events_installation ON sync_events(installation_id)',
       'CREATE INDEX IF NOT EXISTS idx_sync_events_timestamp ON sync_events(timestamp)',
       'CREATE INDEX IF NOT EXISTS idx_sync_conflicts_installation ON sync_conflicts(installation_id)',
-      'CREATE INDEX IF NOT EXISTS idx_sync_conflicts_resolved ON sync_conflicts(resolved)'
+      'CREATE INDEX IF NOT EXISTS idx_sync_conflicts_resolved ON sync_conflicts(resolved)',
+      'CREATE INDEX IF NOT EXISTS idx_users_username ON users(username)',
+      'CREATE INDEX IF NOT EXISTS idx_users_email ON users(email)',
+      'CREATE INDEX IF NOT EXISTS idx_users_company ON users(company_id)',
+      'CREATE INDEX IF NOT EXISTS idx_user_sessions_user ON user_sessions(user_id)',
+      'CREATE INDEX IF NOT EXISTS idx_user_sessions_token ON user_sessions(token)'
     ];
 
     let completed = 0;

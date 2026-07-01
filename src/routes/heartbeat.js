@@ -2,9 +2,10 @@ const express = require('express');
 const router = express.Router();
 const { getDatabase } = require('../database/db');
 const { v4: uuidv4 } = require('uuid');
+const { authenticateToken } = require('./auth');
 
 // POST /api/v1/installations/heartbeat
-router.post('/heartbeat', async (req, res) => {
+router.post('/heartbeat', authenticateToken, async (req, res) => {
   const db = getDatabase();
   const {
     installationId,
@@ -22,6 +23,8 @@ router.post('/heartbeat', async (req, res) => {
     updateVersion,
     metrics
   } = req.body;
+
+  const userId = req.user.userId;
 
   try {
     const now = new Date().toISOString();
@@ -170,9 +173,10 @@ router.post('/heartbeat', async (req, res) => {
 });
 
 // POST /api/v1/sync/push - Recibir datos de sincronización desde el cliente
-router.post('/sync/push', async (req, res) => {
+router.post('/sync/push', authenticateToken, async (req, res) => {
   const db = getDatabase();
   const { installationId, events } = req.body;
+  const userId = req.user.userId;
 
   try {
     const now = new Date().toISOString();
@@ -200,15 +204,16 @@ router.post('/sync/push', async (req, res) => {
     for (const event of events) {
       const { type, table, data, operation, timestamp, eventId } = event;
 
-      // Guardar evento en la tabla de eventos de sincronización
+      // Guardar evento en la tabla de eventos de sincronización con user_id
       await new Promise((resolve, reject) => {
         db.run(
           `INSERT INTO sync_events (
-            event_id, installation_id, table_name, operation, 
+            event_id, user_id, installation_id, table_name, operation, 
             data, timestamp, processed_at
-          ) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
           [
             eventId || uuidv4(),
+            userId,
             installationId,
             table,
             operation,
@@ -242,9 +247,10 @@ router.post('/sync/push', async (req, res) => {
 });
 
 // GET /api/v1/sync/pull - Obtener cambios desde el servidor para el cliente
-router.get('/sync/pull', async (req, res) => {
+router.get('/sync/pull', authenticateToken, async (req, res) => {
   const db = getDatabase();
   const { installationId, lastSyncTimestamp } = req.query;
+  const userId = req.user.userId;
 
   try {
     // Verificar que la instalación existe
@@ -265,15 +271,15 @@ router.get('/sync/pull', async (req, res) => {
       });
     }
 
-    // Obtener eventos de sincronización desde el último sync
+    // Obtener eventos de sincronización desde el último sync, filtrados por usuario
     const lastSync = lastSyncTimestamp || new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
     
     const events = await new Promise((resolve, reject) => {
       db.all(
         `SELECT * FROM sync_events 
-         WHERE installation_id != ? AND timestamp > ?
+         WHERE user_id = ? AND timestamp > ?
          ORDER BY timestamp ASC`,
-        [installationId, lastSync],
+        [userId, lastSync],
         (err, rows) => {
           if (err) reject(err);
           else resolve(rows);
