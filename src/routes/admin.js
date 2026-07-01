@@ -451,4 +451,118 @@ router.get('/installations', authenticateToken, async (req, res) => {
   }
 });
 
+// POST /api/v1/admin/init-cc-tables - Inicializar tablas del Control Center
+router.post('/init-cc-tables', authenticateToken, async (req, res) => {
+  const db = getDatabase();
+
+  try {
+    const tables = [
+      // Tabla de clientes (del Control Center)
+      `CREATE TABLE IF NOT EXISTS cc_clients (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT NOT NULL,
+        nit TEXT,
+        city TEXT,
+        country TEXT,
+        status TEXT NOT NULL,
+        plan TEXT NOT NULL,
+        contract_value REAL NOT NULL DEFAULT 0,
+        renewal_date TEXT NOT NULL,
+        usage_score INTEGER NOT NULL DEFAULT 0,
+        created_at TEXT NOT NULL,
+        reseller_id INTEGER,
+        tax_rate REAL NOT NULL DEFAULT 19.0,
+        billing_type TEXT NOT NULL DEFAULT 'mensual',
+        billing_day INTEGER NOT NULL DEFAULT 5,
+        notes TEXT,
+        contact_name TEXT,
+        contact_phone TEXT,
+        contact_email TEXT,
+        contact_role TEXT
+      )`,
+      
+      // Tabla de licencias
+      `CREATE TABLE IF NOT EXISTS cc_licenses (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        client_id INTEGER NOT NULL,
+        type TEXT NOT NULL,
+        status TEXT NOT NULL,
+        expires_at TEXT NOT NULL,
+        max_users INTEGER NOT NULL,
+        max_devices INTEGER NOT NULL,
+        max_branches INTEGER NOT NULL,
+        modules TEXT NOT NULL,
+        token_hint TEXT,
+        updated_at TEXT NOT NULL,
+        FOREIGN KEY (client_id) REFERENCES cc_clients(id)
+      )`,
+      
+      // Tabla de leads (CRM)
+      `CREATE TABLE IF NOT EXISTS cc_leads (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT NOT NULL,
+        company TEXT,
+        email TEXT,
+        phone TEXT,
+        source TEXT,
+        status TEXT NOT NULL,
+        notes TEXT,
+        assigned_to TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      )`,
+      
+      // Tabla de tickets de soporte
+      `CREATE TABLE IF NOT EXISTS cc_tickets (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        client_id INTEGER,
+        title TEXT NOT NULL,
+        description TEXT,
+        category TEXT NOT NULL,
+        priority TEXT NOT NULL,
+        status TEXT NOT NULL,
+        assigned_to TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        sla_hours INTEGER,
+        escalated_level INTEGER,
+        FOREIGN KEY (client_id) REFERENCES cc_clients(id)
+      )`,
+      
+      // Tabla de facturas
+      `CREATE TABLE IF NOT EXISTS cc_invoices (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        client_id INTEGER NOT NULL,
+        invoice_number TEXT NOT NULL,
+        status TEXT NOT NULL,
+        total REAL NOT NULL,
+        due_date TEXT NOT NULL,
+        paid_at TEXT,
+        items_json TEXT,
+        FOREIGN KEY (client_id) REFERENCES cc_clients(id)
+      )`
+    ];
+
+    for (const tableSQL of tables) {
+      await new Promise((resolve, reject) => {
+        db.run(tableSQL, (err) => {
+          if (err) reject(err);
+          else resolve();
+        });
+      });
+    }
+
+    res.json({
+      success: true,
+      message: 'Control Center tables initialized successfully'
+    });
+  } catch (error) {
+    console.error('Error initializing CC tables:', error);
+    res.status(500).json({
+      error: 'Internal server error',
+      message: error.message
+    });
+  }
+});
+
 module.exports = router;
