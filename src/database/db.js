@@ -180,6 +180,118 @@ function createTables() {
         expires_at TEXT NOT NULL,
         is_active INTEGER DEFAULT 1,
         FOREIGN KEY (user_id) REFERENCES users(id)
+      )`,
+      
+      // Tabla de clientes (del Control Center)
+      `CREATE TABLE IF NOT EXISTS cc_clients (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT NOT NULL,
+        nit TEXT,
+        city TEXT,
+        country TEXT,
+        status TEXT NOT NULL,
+        plan TEXT NOT NULL,
+        contract_value REAL NOT NULL DEFAULT 0,
+        renewal_date TEXT NOT NULL,
+        usage_score INTEGER NOT NULL DEFAULT 0,
+        created_at TEXT NOT NULL,
+        reseller_id INTEGER,
+        tax_rate REAL NOT NULL DEFAULT 19.0,
+        billing_type TEXT NOT NULL DEFAULT 'mensual',
+        billing_day INTEGER NOT NULL DEFAULT 5,
+        notes TEXT,
+        contact_name TEXT,
+        contact_phone TEXT,
+        contact_email TEXT,
+        contact_role TEXT
+      )`,
+      
+      // Tabla de licencias
+      `CREATE TABLE IF NOT EXISTS cc_licenses (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        client_id INTEGER NOT NULL,
+        type TEXT NOT NULL,
+        status TEXT NOT NULL,
+        expires_at TEXT NOT NULL,
+        max_users INTEGER NOT NULL,
+        max_devices INTEGER NOT NULL,
+        max_branches INTEGER NOT NULL,
+        modules TEXT NOT NULL,
+        token_hint TEXT,
+        updated_at TEXT NOT NULL,
+        FOREIGN KEY (client_id) REFERENCES cc_clients(id)
+      )`,
+      
+      // Tabla de revendedores
+      `CREATE TABLE IF NOT EXISTS cc_resellers (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT NOT NULL,
+        nit TEXT,
+        contact TEXT,
+        phone TEXT,
+        email TEXT,
+        address TEXT,
+        commission_pct REAL,
+        logo_path TEXT,
+        custom_domain TEXT,
+        theme_colors_json TEXT
+      )`,
+      
+      // Tabla de leads (CRM)
+      `CREATE TABLE IF NOT EXISTS cc_leads (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT NOT NULL,
+        stage TEXT NOT NULL,
+        value REAL NOT NULL DEFAULT 0,
+        next_action_at TEXT,
+        created_at TEXT NOT NULL,
+        contact_name TEXT,
+        contact_phone TEXT,
+        contact_email TEXT,
+        source TEXT,
+        probability REAL
+      )`,
+      
+      // Tabla de tickets de soporte
+      `CREATE TABLE IF NOT EXISTS cc_tickets (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        client_id INTEGER,
+        title TEXT NOT NULL,
+        description TEXT,
+        category TEXT NOT NULL,
+        priority TEXT NOT NULL,
+        status TEXT NOT NULL,
+        assigned_to TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        sla_hours INTEGER,
+        escalated_level INTEGER,
+        FOREIGN KEY (client_id) REFERENCES cc_clients(id)
+      )`,
+      
+      // Tabla de facturas
+      `CREATE TABLE IF NOT EXISTS cc_invoices (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        client_id INTEGER NOT NULL,
+        invoice_number TEXT NOT NULL,
+        status TEXT NOT NULL,
+        total REAL NOT NULL,
+        due_date TEXT NOT NULL,
+        paid_at TEXT,
+        items_json TEXT,
+        FOREIGN KEY (client_id) REFERENCES cc_clients(id)
+      )`,
+      
+      // Tabla de pagos
+      `CREATE TABLE IF NOT EXISTS cc_payments (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        client_id INTEGER NOT NULL,
+        amount REAL NOT NULL,
+        payment_date TEXT NOT NULL,
+        payment_method TEXT,
+        reference TEXT,
+        notes TEXT,
+        FOREIGN KEY (client_id) REFERENCES cc_clients(id)
       )`
     ];
 
