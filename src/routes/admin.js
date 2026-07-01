@@ -537,6 +537,40 @@ router.post('/init-cc-tables', authenticateToken, async (req, res) => {
         due_date TEXT NOT NULL,
         paid_at TEXT,
         items_json TEXT
+      )`,
+      
+      // Tabla de instalaciones (para asistencia remota)
+      `CREATE TABLE IF NOT EXISTS cc_installations (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        installation_id TEXT NOT NULL UNIQUE,
+        company_name TEXT NOT NULL,
+        tax_id TEXT,
+        version TEXT NOT NULL,
+        os TEXT NOT NULL,
+        license_status TEXT NOT NULL,
+        license_plan TEXT NOT NULL,
+        license_expiry TEXT,
+        sync_status TEXT NOT NULL,
+        database_status TEXT NOT NULL,
+        critical_errors INTEGER NOT NULL DEFAULT 0,
+        update_available INTEGER NOT NULL DEFAULT 0,
+        update_version TEXT,
+        last_heartbeat TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      )`,
+      
+      // Tabla de comandos remotos
+      `CREATE TABLE IF NOT EXISTS cc_commands (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        installation_id TEXT NOT NULL,
+        action TEXT NOT NULL,
+        parameters TEXT,
+        status TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        executed_at TEXT,
+        result TEXT,
+        FOREIGN KEY (installation_id) REFERENCES cc_installations(installation_id)
       )`
     ];
 
@@ -555,6 +589,235 @@ router.post('/init-cc-tables', authenticateToken, async (req, res) => {
     });
   } catch (error) {
     console.error('Error initializing CC tables:', error);
+    res.status(500).json({
+      error: 'Internal server error',
+      message: error.message
+    });
+  }
+});
+
+// POST /api/v1/installations/heartbeat - Recibir heartbeat de instalación
+router.post('/installations/heartbeat', async (req, res) => {
+  const db = getDatabase();
+  const payload = req.body;
+
+  try {
+    const installationId = payload.installationId;
+    const now = new Date().toISOString();
+
+    // Verificar si la instalación existe
+    const existing = await new Promise((resolve, reject) => {
+      db.get(
+        'SELECT * FROM cc_installations WHERE installation_id = ?',
+        [installationId],
+        (err, row) => {
+          if (err) reject(err);
+          else resolve(row);
+        }
+      );
+    });
+
+    if (existing) {
+      // Actualizar instalación existente
+      await new Promise((resolve, reject) => {
+        db.run(
+          `UPDATE cc_installations 
+           SET company_name = ?, tax_id = ?, version = ?, os = ?, 
+               license_status = ?, license_plan = ?, license_expiry = ?,
+               sync_status = ?, database_status = ?, critical_errors = ?,
+               update_available = ?, update_version = ?, last_heartbeat = ?,
+               updated_at = ?
+           WHERE installation_id = ?`,
+          [
+            payload.companyName || existing.company_name,
+            payload.taxId || existing.tax_id,
+            payload.version || existing.version,
+            payload.os || existing.os,
+            payload.licenseStatus || existing.license_status,
+            payload.licensePlan || existing.license_plan,
+            payload.licenseExpiry || existing.license_expiry,
+            payload.syncStatus || existing.sync_status,
+            payload.databaseStatus || existing.database_status,
+            payload.criticalErrors ?? existing.critical_errors,
+            payload.updateAvailable ? 1 : 0,
+            payload.updateVersion || existing.update_version,
+            now,
+            now,
+            installationId
+          ],
+          (err) => {
+            if (err) reject(err);
+            else resolve();
+          }
+        );
+      });
+    } else {
+      // Crear nueva instalación
+      await new Promise((resolve, reject) => {
+        db.run(
+          `INSERT INTO cc_installations (
+            installation_id, company_name, tax_id, version, os,
+            license_status, license_plan, license_expiry, sync_status,
+            database_status, critical_errors, update_available, update_version,
+            last_heartbeat, created_at, updated_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          [
+            installationId,
+            payload.companyName || 'Unknown',
+            payload.taxId || '',
+            payload.version || '1.0.0',
+            payload.os || 'unknown',
+            payload.licenseStatus || 'local',
+            payload.licensePlan || 'unknown',
+            payload.licenseExpiry || '',
+            payload.syncStatus || 'not_configured',
+            payload.databaseStatus || 'ok',
+            payload.criticalErrors ?? 0,
+            payload.updateAvailable ? 1 : 0,
+            payload.updateVersion || null,
+            now,
+            now,
+            now
+          ],
+          (err) => {
+            if (err) reject(err);
+            else resolve();
+          }
+        );
+      });
+    }
+
+    res.json({
+      success: true,
+      message: 'Heartbeat received'
+    });
+  } catch (error) {
+    console.error('Error processing heartbeat:', error);
+    res.status(500).json({
+      error: 'Internal server error',
+      message: error.message
+    });
+  }
+});
+
+// GET /api/v1/installations - Listar todas las instalaciones
+router.get('/installations', authenticateToken, async (req, res) => {
+  const db = getDatabase();
+
+  try {
+    const installations = await new Promise((resolve, reject) => {
+      db.all(
+        'SELECT * FROM cc_installations ORDER BY last_heartbeat DESC',
+        (err, rows) => {
+          if (err) reject(err);
+          else resolve(rows);
+        }
+      );
+    });
+
+    res.json({
+      success: true,
+      count: installations.length,
+      installations: installations
+    });
+  } catch (error) {
+    console.error('Error getting installations:', error);
+    res.status(500).json({
+      error: 'Internal server error',
+      message: error.message
+    });
+  }
+});
+
+// GET /api/v1/installations/:id/commands - Obtener comandos pendientes para una instalación
+router.get('/installations/:installationId/commands', async (req, res) => {
+  const db = getDatabase();
+  const { installationId } = req.params;
+
+  try {
+    const commands = await new Promise((resolve, reject) => {
+      db.all(
+        'SELECT * FROM cc_commands WHERE installation_id = ? AND status = "pending" ORDER BY created_at ASC',
+        [installationId],
+        (err, rows) => {
+          if (err) reject(err);
+          else resolve(rows);
+        }
+      );
+    });
+
+    res.json({
+      success: true,
+      count: commands.length,
+      commands: commands
+    });
+  } catch (error) {
+    console.error('Error getting commands:', error);
+    res.status(500).json({
+      error: 'Internal server error',
+      message: error.message
+    });
+  }
+});
+
+// POST /api/v1/commands - Enviar comando remoto a una instalación
+router.post('/commands', authenticateToken, async (req, res) => {
+  const db = getDatabase();
+  const { installationId, action, parameters } = req.body;
+
+  try {
+    const now = new Date().toISOString();
+
+    await new Promise((resolve, reject) => {
+      db.run(
+        'INSERT INTO cc_commands (installation_id, action, parameters, status, created_at) VALUES (?, ?, ?, ?, ?)',
+        [installationId, action, JSON.stringify(parameters || {}), 'pending', now],
+        (err) => {
+          if (err) reject(err);
+          else resolve();
+        }
+      );
+    });
+
+    res.json({
+      success: true,
+      message: 'Command sent successfully'
+    });
+  } catch (error) {
+    console.error('Error sending command:', error);
+    res.status(500).json({
+      error: 'Internal server error',
+      message: error.message
+    });
+  }
+});
+
+// POST /api/v1/commands/:id/ack - Confirmar ejecución de comando
+router.post('/commands/:id/ack', async (req, res) => {
+  const db = getDatabase();
+  const { id } = req.params;
+  const { status, result } = req.body;
+
+  try {
+    const now = new Date().toISOString();
+
+    await new Promise((resolve, reject) => {
+      db.run(
+        'UPDATE cc_commands SET status = ?, executed_at = ?, result = ? WHERE id = ?',
+        [status || 'done', now, result || '', id],
+        (err) => {
+          if (err) reject(err);
+          else resolve();
+        }
+      );
+    });
+
+    res.json({
+      success: true,
+      message: 'Command acknowledged'
+    });
+  } catch (error) {
+    console.error('Error acknowledging command:', error);
     res.status(500).json({
       error: 'Internal server error',
       message: error.message
