@@ -493,8 +493,7 @@ router.post('/init-cc-tables', authenticateToken, async (req, res) => {
         max_branches INTEGER NOT NULL,
         modules TEXT NOT NULL,
         token_hint TEXT,
-        updated_at TEXT NOT NULL,
-        FOREIGN KEY (client_id) REFERENCES cc_clients(id)
+        updated_at TEXT NOT NULL
       )`,
       
       // Tabla de leads (CRM)
@@ -525,8 +524,7 @@ router.post('/init-cc-tables', authenticateToken, async (req, res) => {
         created_at TEXT NOT NULL,
         updated_at TEXT NOT NULL,
         sla_hours INTEGER,
-        escalated_level INTEGER,
-        FOREIGN KEY (client_id) REFERENCES cc_clients(id)
+        escalated_level INTEGER
       )`,
       
       // Tabla de facturas
@@ -538,8 +536,7 @@ router.post('/init-cc-tables', authenticateToken, async (req, res) => {
         total REAL NOT NULL,
         due_date TEXT NOT NULL,
         paid_at TEXT,
-        items_json TEXT,
-        FOREIGN KEY (client_id) REFERENCES cc_clients(id)
+        items_json TEXT
       )`
     ];
 
