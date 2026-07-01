@@ -16,6 +16,7 @@ const authRoutes = require('./routes/auth');
 const adminRoutes = require('./routes/admin');
 const licensesRoutes = require('./routes/licenses');
 const clientsRoutes = require('./routes/clients');
+const ticketsRoutes = require('./routes/tickets');
 
 // Importar base de datos
 const { initializeDatabase } = require('./database/db');
@@ -58,6 +59,7 @@ app.use('/api/v1/auth', authRoutes);
 app.use('/api/v1/admin', adminRoutes);
 app.use('/api/v1/licenses', licensesRoutes);
 app.use('/api/v1/clients', clientsRoutes);
+app.use('/api/v1/tickets', ticketsRoutes);
 
 // Health check
 app.get('/health', (req, res) => {
