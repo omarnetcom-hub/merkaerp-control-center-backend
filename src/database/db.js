@@ -241,15 +241,15 @@ function createTables() {
       `CREATE TABLE IF NOT EXISTS cc_leads (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         name TEXT NOT NULL,
-        stage TEXT NOT NULL,
-        value REAL NOT NULL DEFAULT 0,
-        next_action_at TEXT,
-        created_at TEXT NOT NULL,
-        contact_name TEXT,
-        contact_phone TEXT,
-        contact_email TEXT,
+        company TEXT,
+        email TEXT,
+        phone TEXT,
         source TEXT,
-        probability REAL
+        status TEXT NOT NULL,
+        notes TEXT,
+        assigned_to TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
       )`,
       
       // Tabla de tickets de soporte
