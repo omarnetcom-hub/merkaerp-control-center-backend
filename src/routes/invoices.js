@@ -6,21 +6,10 @@ const { authenticateToken } = require('./auth');
 // GET /api/v1/invoices - Listar todas las facturas
 router.get('/', authenticateToken, async (req, res) => {
   const db = getDatabase();
-  const { status } = req.query;
   
   try {
-    let query = 'SELECT * FROM cc_invoices';
-    const params = [];
-    
-    if (status) {
-      query += ' WHERE status = ?';
-      params.push(status);
-    }
-    
-    query += ' ORDER BY created_at DESC';
-    
     const invoices = await new Promise((resolve, reject) => {
-      db.all(query, params, (err, rows) => {
+      db.all('SELECT * FROM cc_invoices', (err, rows) => {
         if (err) reject(err);
         else resolve(rows);
       });
