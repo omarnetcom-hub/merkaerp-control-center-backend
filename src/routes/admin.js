@@ -264,14 +264,107 @@ router.get('/stats', authenticateToken, async (req, res) => {
       );
     });
 
+    // Estadísticas de clientes
+    const totalClients = await new Promise((resolve, reject) => {
+      db.get('SELECT COUNT(*) as count FROM cc_clients', (err, row) => {
+        if (err) reject(err);
+        else resolve(row.count);
+      });
+    });
+
+    const activeClients = await new Promise((resolve, reject) => {
+      db.get("SELECT COUNT(*) as count FROM cc_clients WHERE status = 'active'", (err, row) => {
+        if (err) reject(err);
+        else resolve(row.count);
+      });
+    });
+
+    // Estadísticas de licencias
+    const totalLicenses = await new Promise((resolve, reject) => {
+      db.get('SELECT COUNT(*) as count FROM cc_licenses', (err, row) => {
+        if (err) reject(err);
+        else resolve(row.count);
+      });
+    });
+
+    const activeLicenses = await new Promise((resolve, reject) => {
+      db.get("SELECT COUNT(*) as count FROM cc_licenses WHERE status = 'active'", (err, row) => {
+        if (err) reject(err);
+        else resolve(row.count);
+      });
+    });
+
+    // Estadísticas de tickets
+    const totalTickets = await new Promise((resolve, reject) => {
+      db.get('SELECT COUNT(*) as count FROM cc_tickets', (err, row) => {
+        if (err) reject(err);
+        else resolve(row.count);
+      });
+    });
+
+    const openTickets = await new Promise((resolve, reject) => {
+      db.get("SELECT COUNT(*) as count FROM cc_tickets WHERE status = 'open'", (err, row) => {
+        if (err) reject(err);
+        else resolve(row.count);
+      });
+    });
+
+    // Estadísticas de facturas
+    const totalInvoices = await new Promise((resolve, reject) => {
+      db.get('SELECT COUNT(*) as count FROM cc_invoices', (err, row) => {
+        if (err) reject(err);
+        else resolve(row.count);
+      });
+    });
+
+    const pendingInvoices = await new Promise((resolve, reject) => {
+      db.get("SELECT COUNT(*) as count FROM cc_invoices WHERE status = 'pending'", (err, row) => {
+        if (err) reject(err);
+        else resolve(row.count);
+      });
+    });
+
+    // Ingresos totales
+    const totalRevenue = await new Promise((resolve, reject) => {
+      db.get('SELECT SUM(contract_value) as total FROM cc_clients', (err, row) => {
+        if (err) reject(err);
+        else resolve(row.total || 0);
+      });
+    });
+
     res.json({
       success: true,
       stats: {
-        totalUsers,
-        activeUsers,
-        totalInstallations,
-        totalSyncEvents,
-        recentHeartbeats,
+        users: {
+          total: totalUsers,
+          active: activeUsers
+        },
+        installations: {
+          total: totalInstallations,
+          recentHeartbeats
+        },
+        sync: {
+          totalEvents: totalSyncEvents
+        },
+        clients: {
+          total: totalClients,
+          active: activeClients
+        },
+        licenses: {
+          total: totalLicenses,
+          active: activeLicenses
+        },
+        tickets: {
+          total: totalTickets,
+          open: openTickets
+        },
+        invoices: {
+          total: totalInvoices,
+          pending: pendingInvoices
+        },
+        revenue: {
+          total: totalRevenue
+        },
         timestamp: new Date().toISOString()
       }
     });
