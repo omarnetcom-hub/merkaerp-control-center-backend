@@ -25,14 +25,30 @@ router.post('/activate', async (req, res) => {
   }
 
   try {
-    // TODO: Connect to Control Center database and validate user credentials
-    // For now, simulate user validation
-    const isValidUser = email.includes('@') && password.length > 5;
-    
-    if (!isValidUser) {
+    // Validar credenciales contra la base de datos del Control Center
+    const client = await new Promise((resolve, reject) => {
+      db.get(
+        `SELECT * FROM cc_clients WHERE contact_email = ? AND password = ?`,
+        [email, password],
+        (err, row) => {
+          if (err) reject(err);
+          else resolve(row);
+        }
+      );
+    });
+
+    if (!client) {
       return res.status(401).json({ 
         success: false, 
-        error: 'Invalid credentials' 
+        error: 'Invalid credentials: email or password incorrect' 
+      });
+    }
+
+    // Verificar si el cliente está activo
+    if (client.status !== 'active') {
+      return res.status(403).json({ 
+        success: false, 
+        error: 'Client account is not active. Please contact support.' 
       });
     }
 
@@ -53,6 +69,8 @@ router.post('/activate', async (req, res) => {
       max_branches: finalLicenseType === 'SUSCRIPCION' ? 2 : 3,
       modules: 'sales,purchases,inventory,cash,accounting,reports',
       license_type: finalLicenseType,
+      client_id: client.id,
+      client_name: client.name,
     };
 
     // Generate JWT token for offline activation
@@ -63,6 +81,7 @@ router.post('/activate', async (req, res) => {
       status: 'ACTIVO',
       expiry_date: expiresAt,
       modules: licenseData.modules.split(','),
+      client_id: client.id,
       iat: Math.floor(Date.now() / 1000),
     };
 
@@ -75,6 +94,8 @@ router.post('/activate', async (req, res) => {
       user: {
         email: email,
         license_type: finalLicenseType,
+        client_id: client.id,
+        client_name: client.name,
       },
     });
   } catch (error) {
