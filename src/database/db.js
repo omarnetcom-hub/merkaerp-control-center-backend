@@ -203,7 +203,8 @@ function createTables() {
         contact_name TEXT,
         contact_phone TEXT,
         contact_email TEXT,
-        contact_role TEXT
+        contact_role TEXT,
+        password TEXT
       )`,
       
       // Tabla de licencias
@@ -307,9 +308,15 @@ function createTables() {
           completed++;
           if (completed === total) {
             console.log('Todas las tablas creadas exitosamente');
-            createIndexes()
-              .then(() => resolve())
-              .catch(reject);
+            // Migración: Agregar campo password a cc_clients si no existe
+            db.run('ALTER TABLE cc_clients ADD COLUMN password TEXT', (err) => {
+              if (err && !err.message.includes('duplicate column')) {
+                console.error('Error en migración password:', err);
+              }
+              createIndexes()
+                .then(() => resolve())
+                .catch(reject);
+            });
           }
         }
       });
