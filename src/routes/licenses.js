@@ -316,6 +316,99 @@ router.delete('/:id', authenticateToken, async (req, res) => {
   }
 });
 
+// POST /api/v1/clients - Crear o actualizar cliente (para sincronización desde Control Center)
+router.post('/clients', async (req, res) => {
+  const db = getDatabase();
+  const { 
+    id,
+    name,
+    nit,
+    city,
+    country,
+    status,
+    plan,
+    contractValue,
+    renewalDate,
+    usageScore,
+    createdAt,
+    resellerId,
+    taxRate,
+    billingType,
+    billingDay,
+    notes,
+    contactName,
+    contactPhone,
+    contactEmail,
+    contactRole,
+    password
+  } = req.body;
+
+  try {
+    const now = new Date().toISOString();
+
+    if (id) {
+      // Actualizar cliente existente
+      await new Promise((resolve, reject) => {
+        db.run(
+          `UPDATE cc_clients 
+           SET name = ?, nit = ?, city = ?, country = ?, status = ?, plan = ?, 
+               contract_value = ?, renewal_date = ?, usage_score = ?, reseller_id = ?, 
+               tax_rate = ?, billing_type = ?, billing_day = ?, notes = ?, 
+               contact_name = ?, contact_phone = ?, contact_email = ?, contact_role = ?, password = ?
+           WHERE id = ?`,
+          [
+            name, nit, city, country, status, plan, contractValue, renewalDate, 
+            usageScore, resellerId, taxRate, billingType, billingDay, notes, 
+            contactName, contactPhone, contactEmail, contactRole, password, id
+          ],
+          (err) => {
+            if (err) reject(err);
+            else resolve();
+          }
+        );
+      });
+
+      res.json({
+        success: true,
+        message: 'Client updated successfully',
+        id: id
+      });
+    } else {
+      // Crear nuevo cliente
+      const result = await new Promise((resolve, reject) => {
+        db.run(
+          `INSERT INTO cc_clients (
+            name, nit, city, country, status, plan, contract_value, renewal_date, 
+            usage_score, created_at, reseller_id, tax_rate, billing_type, billing_day, 
+            notes, contact_name, contact_phone, contact_email, contact_role, password
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          [
+            name, nit, city, country, status, plan, contractValue, renewalDate, 
+            usageScore, createdAt || now, resellerId, taxRate, billingType, billingDay, 
+            notes, contactName, contactPhone, contactEmail, contactRole, password
+          ],
+          function(err) {
+            if (err) reject(err);
+            else resolve(this);
+          }
+        );
+      });
+
+      res.status(201).json({
+        success: true,
+        message: 'Client created successfully',
+        id: result.lastID
+      });
+    }
+  } catch (error) {
+    console.error('Error saving client:', error);
+    res.status(500).json({
+      error: 'Internal server error',
+      message: error.message
+    });
+  }
+});
+
 // POST /api/v1/licenses/validate - Validar licencia (sin auth para uso de MerkaERP)
 router.post('/validate', async (req, res) => {
   const db = getDatabase();
