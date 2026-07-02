@@ -14,33 +14,52 @@ function generateLicenseToken(payload) {
 // License activation endpoint
 router.post('/activate', async (req, res) => {
   try {
-    const { key, hardware_fingerprint } = req.body;
+    const { email, password, hardware_fingerprint, license_type } = req.body;
 
-    if (!key || !hardware_fingerprint) {
+    if (!email || !password || !hardware_fingerprint) {
       return res.status(400).json({ 
         success: false, 
-        error: 'Missing required fields: key and hardware_fingerprint' 
+        error: 'Missing required fields: email, password and hardware_fingerprint' 
       });
     }
 
-    // TODO: Connect to Control Center database and validate license key
-    // For now, simulate license validation
+    // TODO: Connect to Control Center database and validate user credentials
+    // For now, simulate user validation
+    const isValidUser = email.includes('@') && password.length > 5;
+    
+    if (!isValidUser) {
+      return res.status(401).json({ 
+        success: false, 
+        error: 'Invalid credentials' 
+      });
+    }
+
+    // Determine license type (default to SUSCRIPCION if not specified)
+    const finalLicenseType = license_type || 'SUSCRIPCION';
+    
+    // Set expiration based on license type
+    const expiresAt = finalLicenseType === 'PERPETUA' 
+      ? new Date('2099-12-31').toISOString()
+      : new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString(); // 30 days for subscription
+
     const licenseData = {
-      type: 'Profesional',
-      status: 'active',
-      expires_at: new Date(Date.now() + 365 * 24 * 60 * 60 * 1000).toISOString(),
-      max_users: 8,
-      max_devices: 12,
-      max_branches: 2,
+      type: finalLicenseType === 'SUSCRIPCION' ? 'Suscripción' : 'Perpetua',
+      status: 'ACTIVO',
+      expires_at: expiresAt,
+      max_users: finalLicenseType === 'SUSCRIPCION' ? 8 : 10,
+      max_devices: finalLicenseType === 'SUSCRIPCION' ? 12 : 15,
+      max_branches: finalLicenseType === 'SUSCRIPCION' ? 2 : 3,
       modules: 'sales,purchases,inventory,cash,accounting,reports',
+      license_type: finalLicenseType,
     };
 
     // Generate JWT token for offline activation
     const tokenPayload = {
+      email,
       hardware_fingerprint,
-      license_type: 'SUSCRIPCION',
-      status: 'active',
-      expiry_date: licenseData.expires_at,
+      license_type: finalLicenseType,
+      status: 'ACTIVO',
+      expiry_date: expiresAt,
       modules: licenseData.modules.split(','),
       iat: Math.floor(Date.now() / 1000),
     };
@@ -51,6 +70,10 @@ router.post('/activate', async (req, res) => {
       success: true,
       token: token,
       license: licenseData,
+      user: {
+        email: email,
+        license_type: finalLicenseType,
+      },
     });
   } catch (error) {
     console.error('License activation error:', error);
