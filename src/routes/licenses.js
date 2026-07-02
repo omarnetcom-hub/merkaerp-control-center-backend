@@ -87,6 +87,35 @@ router.post('/activate', async (req, res) => {
 
     const token = generateLicenseToken(tokenPayload);
 
+    // Registrar instalación en la base de datos
+    const installationId = `MERKA-${Date.now()}-${Math.random().toString(36).substr(2, 9).toUpperCase()}`;
+    await new Promise((resolve, reject) => {
+      db.run(
+        `INSERT INTO installations (
+          id, company_name, tax_id, version, os, license_status, 
+          license_plan, license_expiry, status, created_at, updated_at, last_heartbeat
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          installationId,
+          client.name,
+          client.nit,
+          '1.0.0',
+          'Windows',
+          'online',
+          finalLicenseType,
+          expiresAt,
+          'active',
+          new Date().toISOString(),
+          new Date().toISOString(),
+          new Date().toISOString()
+        ],
+        (err) => {
+          if (err) reject(err);
+          else resolve();
+        }
+      );
+    });
+
     res.json({
       success: true,
       token: token,
@@ -97,6 +126,7 @@ router.post('/activate', async (req, res) => {
         client_id: client.id,
         client_name: client.name,
       },
+      installation_id: installationId,
     });
   } catch (error) {
     console.error('License activation error:', error);
@@ -405,6 +435,61 @@ router.post('/clients', async (req, res) => {
     res.status(500).json({
       error: 'Internal server error',
       message: error.message
+    });
+  }
+});
+
+// GET /api/v1/installations - Obtener todas las instalaciones
+router.get('/installations', async (req, res) => {
+  const db = getDatabase();
+  
+  try {
+    const installations = await new Promise((resolve, reject) => {
+      db.all('SELECT * FROM installations ORDER BY created_at DESC', (err, rows) => {
+        if (err) reject(err);
+        else resolve(rows);
+      });
+    });
+
+    res.json({
+      success: true,
+      installations: installations
+    });
+  } catch (error) {
+    console.error('Error fetching installations:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
+// GET /api/v1/installations/:clientId - Obtener instalaciones por cliente
+router.get('/installations/client/:clientId', async (req, res) => {
+  const db = getDatabase();
+  const { clientId } = req.params;
+  
+  try {
+    const installations = await new Promise((resolve, reject) => {
+      db.all(
+        'SELECT * FROM installations WHERE tax_id = ? ORDER BY created_at DESC',
+        [clientId],
+        (err, rows) => {
+          if (err) reject(err);
+          else resolve(rows);
+        }
+      );
+    });
+
+    res.json({
+      success: true,
+      installations: installations
+    });
+  } catch (error) {
+    console.error('Error fetching client installations:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message
     });
   }
 });
