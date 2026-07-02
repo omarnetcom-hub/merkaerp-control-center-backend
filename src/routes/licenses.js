@@ -2,6 +2,89 @@ const express = require('express');
 const router = express.Router();
 const { getDatabase } = require('../database/db');
 const { authenticateToken } = require('./auth');
+const jwt = require('jsonwebtoken');
+
+// Secret key for JWT signing
+const JWT_SECRET = process.env.JWT_SECRET || 'merka-control-center-secret-key-2024';
+
+// Helper function to generate JWT token
+function generateLicenseToken(payload) {
+  return jwt.sign(payload, JWT_SECRET, { expiresIn: '365d' });
+}
+
+// POST /api/v1/licenses/activate - Activar licencia (sin auth para uso de MerkaERP)
+router.post('/activate', async (req, res) => {
+  const db = getDatabase();
+  const { email, password, hardware_fingerprint, license_type } = req.body;
+
+  if (!email || !password || !hardware_fingerprint) {
+    return res.status(400).json({ 
+      success: false, 
+      error: 'Missing required fields: email, password and hardware_fingerprint' 
+    });
+  }
+
+  try {
+    // TODO: Connect to Control Center database and validate user credentials
+    // For now, simulate user validation
+    const isValidUser = email.includes('@') && password.length > 5;
+    
+    if (!isValidUser) {
+      return res.status(401).json({ 
+        success: false, 
+        error: 'Invalid credentials' 
+      });
+    }
+
+    // Determine license type (default to SUSCRIPCION if not specified)
+    const finalLicenseType = license_type || 'SUSCRIPCION';
+    
+    // Set expiration based on license type
+    const expiresAt = finalLicenseType === 'PERPETUA' 
+      ? new Date('2099-12-31').toISOString()
+      : new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString(); // 30 days for subscription
+
+    const licenseData = {
+      type: finalLicenseType === 'SUSCRIPCION' ? 'Suscripción' : 'Perpetua',
+      status: 'ACTIVO',
+      expires_at: expiresAt,
+      max_users: finalLicenseType === 'SUSCRIPCION' ? 8 : 10,
+      max_devices: finalLicenseType === 'SUSCRIPCION' ? 12 : 15,
+      max_branches: finalLicenseType === 'SUSCRIPCION' ? 2 : 3,
+      modules: 'sales,purchases,inventory,cash,accounting,reports',
+      license_type: finalLicenseType,
+    };
+
+    // Generate JWT token for offline activation
+    const tokenPayload = {
+      email,
+      hardware_fingerprint,
+      license_type: finalLicenseType,
+      status: 'ACTIVO',
+      expiry_date: expiresAt,
+      modules: licenseData.modules.split(','),
+      iat: Math.floor(Date.now() / 1000),
+    };
+
+    const token = generateLicenseToken(tokenPayload);
+
+    res.json({
+      success: true,
+      token: token,
+      license: licenseData,
+      user: {
+        email: email,
+        license_type: finalLicenseType,
+      },
+    });
+  } catch (error) {
+    console.error('License activation error:', error);
+    res.status(500).json({ 
+      success: false, 
+      error: error.message 
+    });
+  }
+});
 
 // GET /api/v1/licenses - Listar todas las licencias
 router.get('/', authenticateToken, async (req, res) => {
