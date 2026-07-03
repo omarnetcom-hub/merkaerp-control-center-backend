@@ -26,6 +26,8 @@ const { initializeDatabase } = require('./database/db');
 const app = express();
 const PORT = process.env.PORT || 8787;
 
+console.log('Starting server with PostgreSQL support...');
+
 // Middleware de seguridad
 app.use(helmet());
 
