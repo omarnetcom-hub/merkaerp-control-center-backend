@@ -342,7 +342,7 @@ function createTablesSQLite() {
 function createTablesPostgres() {
   return new Promise((resolve, reject) => {
     const tables = [
-      // Tabla de instalaciones
+      // Tablas sin dependencias (crear primero)
       `CREATE TABLE IF NOT EXISTS installations (
         id TEXT PRIMARY KEY,
         company_name TEXT NOT NULL,
@@ -360,55 +360,6 @@ function createTablesPostgres() {
         last_heartbeat TEXT
       )`,
       
-      // Tabla de heartbeats
-      `CREATE TABLE IF NOT EXISTS heartbeats (
-        id SERIAL PRIMARY KEY,
-        installation_id TEXT NOT NULL,
-        company_name TEXT,
-        tax_id TEXT,
-        version TEXT,
-        os TEXT,
-        license_status TEXT,
-        license_plan TEXT,
-        license_expiry TEXT,
-        sync_status TEXT,
-        database_status TEXT,
-        critical_errors INTEGER DEFAULT 0,
-        update_available INTEGER DEFAULT 0,
-        update_version TEXT,
-        metrics TEXT,
-        received_at TEXT NOT NULL,
-        FOREIGN KEY (installation_id) REFERENCES installations(id)
-      )`,
-      
-      // Tabla de eventos de telemetría
-      `CREATE TABLE IF NOT EXISTS telemetry_events (
-        id SERIAL PRIMARY KEY,
-        installation_id TEXT,
-        company_name TEXT,
-        tax_id TEXT,
-        event TEXT NOT NULL,
-        module TEXT,
-        severity TEXT DEFAULT 'info',
-        received_at TEXT NOT NULL,
-        FOREIGN KEY (installation_id) REFERENCES installations(id)
-      )`,
-      
-      // Tabla de comandos remotos
-      `CREATE TABLE IF NOT EXISTS remote_commands (
-        id TEXT PRIMARY KEY,
-        installation_id TEXT NOT NULL,
-        action TEXT NOT NULL,
-        params TEXT,
-        status TEXT DEFAULT 'pending',
-        created_at TEXT NOT NULL,
-        sent_at TEXT,
-        acknowledged_at TEXT,
-        result TEXT,
-        FOREIGN KEY (installation_id) REFERENCES installations(id)
-      )`,
-      
-      // Tabla de actualizaciones
       `CREATE TABLE IF NOT EXISTS updates (
         id SERIAL PRIMARY KEY,
         version TEXT NOT NULL,
@@ -422,21 +373,6 @@ function createTablesPostgres() {
         created_at TEXT NOT NULL
       )`,
       
-      // Tabla de licencias
-      `CREATE TABLE IF NOT EXISTS licenses (
-        id TEXT PRIMARY KEY,
-        installation_id TEXT UNIQUE NOT NULL,
-        plan TEXT NOT NULL,
-        estado TEXT NOT NULL,
-        fecha_expiracion TEXT NOT NULL,
-        modulos TEXT,
-        limite_db_mb INTEGER,
-        created_at TEXT NOT NULL,
-        updated_at TEXT,
-        FOREIGN KEY (installation_id) REFERENCES installations(id)
-      )`,
-      
-      // Tabla de clientes (del Control Center)
       `CREATE TABLE IF NOT EXISTS cc_clients (
         id SERIAL PRIMARY KEY,
         name TEXT NOT NULL,
@@ -463,23 +399,6 @@ function createTablesPostgres() {
         subscription_months INTEGER DEFAULT 12
       )`,
       
-      // Tabla de licencias
-      `CREATE TABLE IF NOT EXISTS cc_licenses (
-        id SERIAL PRIMARY KEY,
-        client_id INTEGER NOT NULL,
-        type TEXT NOT NULL,
-        status TEXT NOT NULL,
-        expires_at TEXT NOT NULL,
-        max_users INTEGER NOT NULL,
-        max_devices INTEGER NOT NULL,
-        max_branches INTEGER NOT NULL,
-        modules TEXT NOT NULL,
-        token_hint TEXT,
-        updated_at TEXT NOT NULL,
-        FOREIGN KEY (client_id) REFERENCES cc_clients(id)
-      )`,
-      
-      // Tabla de revendedores
       `CREATE TABLE IF NOT EXISTS cc_resellers (
         id SERIAL PRIMARY KEY,
         name TEXT NOT NULL,
@@ -496,7 +415,6 @@ function createTablesPostgres() {
         created_at TEXT NOT NULL
       )`,
       
-      // Tabla de leads
       `CREATE TABLE IF NOT EXISTS cc_leads (
         id SERIAL PRIMARY KEY,
         name TEXT NOT NULL,
@@ -511,7 +429,93 @@ function createTablesPostgres() {
         updated_at TEXT
       )`,
       
-      // Tabla de tickets
+      `CREATE TABLE IF NOT EXISTS users (
+        id SERIAL PRIMARY KEY,
+        username TEXT UNIQUE NOT NULL,
+        password_hash TEXT NOT NULL,
+        email TEXT UNIQUE NOT NULL,
+        full_name TEXT NOT NULL,
+        role TEXT NOT NULL DEFAULT 'admin',
+        avatar_path TEXT,
+        created_at TEXT NOT NULL,
+        last_login TEXT,
+        is_active INTEGER NOT NULL DEFAULT 1
+      )`,
+      
+      // Tablas que dependen de las anteriores
+      `CREATE TABLE IF NOT EXISTS heartbeats (
+        id SERIAL PRIMARY KEY,
+        installation_id TEXT NOT NULL,
+        company_name TEXT,
+        tax_id TEXT,
+        version TEXT,
+        os TEXT,
+        license_status TEXT,
+        license_plan TEXT,
+        license_expiry TEXT,
+        sync_status TEXT,
+        database_status TEXT,
+        critical_errors INTEGER DEFAULT 0,
+        update_available INTEGER DEFAULT 0,
+        update_version TEXT,
+        metrics TEXT,
+        received_at TEXT NOT NULL,
+        FOREIGN KEY (installation_id) REFERENCES installations(id)
+      )`,
+      
+      `CREATE TABLE IF NOT EXISTS telemetry_events (
+        id SERIAL PRIMARY KEY,
+        installation_id TEXT,
+        company_name TEXT,
+        tax_id TEXT,
+        event TEXT NOT NULL,
+        module TEXT,
+        severity TEXT DEFAULT 'info',
+        received_at TEXT NOT NULL,
+        FOREIGN KEY (installation_id) REFERENCES installations(id)
+      )`,
+      
+      `CREATE TABLE IF NOT EXISTS remote_commands (
+        id TEXT PRIMARY KEY,
+        installation_id TEXT NOT NULL,
+        action TEXT NOT NULL,
+        params TEXT,
+        status TEXT DEFAULT 'pending',
+        created_at TEXT NOT NULL,
+        sent_at TEXT,
+        acknowledged_at TEXT,
+        result TEXT,
+        FOREIGN KEY (installation_id) REFERENCES installations(id)
+      )`,
+      
+      `CREATE TABLE IF NOT EXISTS licenses (
+        id TEXT PRIMARY KEY,
+        installation_id TEXT UNIQUE NOT NULL,
+        plan TEXT NOT NULL,
+        estado TEXT NOT NULL,
+        fecha_expiracion TEXT NOT NULL,
+        modulos TEXT,
+        limite_db_mb INTEGER,
+        created_at TEXT NOT NULL,
+        updated_at TEXT,
+        FOREIGN KEY (installation_id) REFERENCES installations(id)
+      )`,
+      
+      `CREATE TABLE IF NOT EXISTS cc_licenses (
+        id SERIAL PRIMARY KEY,
+        client_id INTEGER NOT NULL,
+        type TEXT NOT NULL,
+        status TEXT NOT NULL,
+        expires_at TEXT NOT NULL,
+        max_users INTEGER NOT NULL,
+        max_devices INTEGER NOT NULL,
+        max_branches INTEGER NOT NULL,
+        modules TEXT NOT NULL,
+        token_hint TEXT,
+        updated_at TEXT NOT NULL,
+        FOREIGN KEY (client_id) REFERENCES cc_clients(id)
+      )`,
+      
       `CREATE TABLE IF NOT EXISTS cc_tickets (
         id SERIAL PRIMARY KEY,
         client_id INTEGER,
@@ -526,7 +530,6 @@ function createTablesPostgres() {
         FOREIGN KEY (client_id) REFERENCES cc_clients(id)
       )`,
       
-      // Tabla de facturas
       `CREATE TABLE IF NOT EXISTS cc_invoices (
         id SERIAL PRIMARY KEY,
         client_id INTEGER NOT NULL,
@@ -540,7 +543,16 @@ function createTablesPostgres() {
         FOREIGN KEY (client_id) REFERENCES cc_clients(id)
       )`,
       
-      // Tabla de pagos
+      `CREATE TABLE IF NOT EXISTS user_sessions (
+        id SERIAL PRIMARY KEY,
+        user_id INTEGER NOT NULL,
+        token TEXT UNIQUE NOT NULL,
+        expires_at TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        FOREIGN KEY (user_id) REFERENCES users (id)
+      )`,
+      
+      // Tablas que dependen de las anteriores
       `CREATE TABLE IF NOT EXISTS cc_payments (
         id SERIAL PRIMARY KEY,
         invoice_id INTEGER NOT NULL,
@@ -550,30 +562,6 @@ function createTablesPostgres() {
         reference TEXT,
         created_at TEXT NOT NULL,
         FOREIGN KEY (invoice_id) REFERENCES cc_invoices(id)
-      )`,
-      
-      // Tabla de usuarios
-      `CREATE TABLE IF NOT EXISTS users (
-        id SERIAL PRIMARY KEY,
-        username TEXT UNIQUE NOT NULL,
-        password_hash TEXT NOT NULL,
-        email TEXT UNIQUE NOT NULL,
-        full_name TEXT NOT NULL,
-        role TEXT NOT NULL DEFAULT 'admin',
-        avatar_path TEXT,
-        created_at TEXT NOT NULL,
-        last_login TEXT,
-        is_active INTEGER NOT NULL DEFAULT 1
-      )`,
-      
-      // Tabla de sesiones
-      `CREATE TABLE IF NOT EXISTS user_sessions (
-        id SERIAL PRIMARY KEY,
-        user_id INTEGER NOT NULL,
-        token TEXT UNIQUE NOT NULL,
-        expires_at TEXT NOT NULL,
-        created_at TEXT NOT NULL,
-        FOREIGN KEY (user_id) REFERENCES users (id)
       )`
     ];
 
