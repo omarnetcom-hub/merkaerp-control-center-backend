@@ -114,7 +114,9 @@ router.post('/sync', async (req, res) => {
     contactRole,
     notes,
     resellerId,
-    password
+    password,
+    licenseType,
+    subscriptionMonths
   } = req.body;
 
   try {
@@ -158,6 +160,62 @@ router.post('/sync', async (req, res) => {
         );
       });
 
+      // Actualizar o crear licencia del cliente
+      const existingLicense = await new Promise((resolve, reject) => {
+        db.get('SELECT * FROM cc_licenses WHERE client_id = ?', [id], (err, row) => {
+          if (err) reject(err);
+          else resolve(row);
+        });
+      });
+
+      const expiresAt = licenseType === 'PERPETUA' 
+        ? '2099-12-31' 
+        : new Date(Date.now() + (30 * (subscriptionMonths || 12) * 24 * 60 * 60 * 1000)).toISOString();
+
+      if (existingLicense) {
+        // Actualizar licencia existente
+        await new Promise((resolve, reject) => {
+          db.run(
+            `UPDATE cc_licenses 
+             SET type = ?, expires_at = ?, license_type = ?, updated_at = ?
+             WHERE id = ?`,
+            [plan, expiresAt, licenseType, new Date().toISOString(), existingLicense.id],
+            (err) => {
+              if (err) reject(err);
+              else resolve();
+            }
+          );
+        });
+      } else {
+        // Crear nueva licencia
+        const licenseId = Math.floor(Math.random() * 10000) + 1000;
+        await new Promise((resolve, reject) => {
+          db.run(
+            `INSERT INTO cc_licenses (
+              id, client_id, type, status, expires_at, max_users, max_devices, 
+              max_branches, modules, token_hint, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            [
+              licenseId,
+              id,
+              plan,
+              'ACTIVO',
+              expiresAt,
+              plan === 'Empresarial' ? 30 : (plan === 'Profesional' ? 8 : 1),
+              plan === 'Empresarial' ? 50 : (plan === 'Profesional' ? 12 : 1),
+              plan === 'Empresarial' ? 10 : (plan === 'Profesional' ? 2 : 1),
+              'sales,purchases,inventory,cash,accounting,reports',
+              licenseType,
+              new Date().toISOString()
+            ],
+            (err) => {
+              if (err) reject(err);
+              else resolve();
+            }
+          );
+        });
+      }
+
       res.json({
         success: true,
         message: 'Client synced successfully'
@@ -198,6 +256,38 @@ router.post('/sync', async (req, res) => {
           function(err) {
             if (err) reject(err);
             else resolve(this.lastID);
+          }
+        );
+      });
+
+      // Crear licencia para el nuevo cliente
+      const expiresAt = licenseType === 'PERPETUA' 
+        ? '2099-12-31' 
+        : new Date(Date.now() + (30 * (subscriptionMonths || 12) * 24 * 60 * 60 * 1000)).toISOString();
+
+      const licenseId = Math.floor(Math.random() * 10000) + 1000;
+      await new Promise((resolve, reject) => {
+        db.run(
+          `INSERT INTO cc_licenses (
+            id, client_id, type, status, expires_at, max_users, max_devices, 
+            max_branches, modules, token_hint, updated_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          [
+            licenseId,
+            lastId,
+            plan,
+            'ACTIVO',
+            expiresAt,
+            plan === 'Empresarial' ? 30 : (plan === 'Profesional' ? 8 : 1),
+            plan === 'Empresarial' ? 50 : (plan === 'Profesional' ? 12 : 1),
+            plan === 'Empresarial' ? 10 : (plan === 'Profesional' ? 2 : 1),
+            'sales,purchases,inventory,cash,accounting,reports',
+            licenseType,
+            new Date().toISOString()
+          ],
+          (err) => {
+            if (err) reject(err);
+            else resolve();
           }
         );
       });
