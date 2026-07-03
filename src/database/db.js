@@ -636,8 +636,12 @@ function getDatabase() {
 // Helper para ejecutar queries de forma compatible con SQLite y PostgreSQL
 function query(sql, params = []) {
   if (USE_POSTGRES) {
+    // Convertir ? a $1, $2, $3 para PostgreSQL
+    let paramIndex = 1;
+    const pgSql = sql.replace(/\?/g, () => `$${paramIndex++}`);
+    
     return new Promise((resolve, reject) => {
-      pool.query(sql, params, (err, result) => {
+      pool.query(pgSql, params, (err, result) => {
         if (err) reject(err);
         else resolve(result);
       });
@@ -654,8 +658,12 @@ function query(sql, params = []) {
 
 function queryAll(sql, params = []) {
   if (USE_POSTGRES) {
+    // Convertir ? a $1, $2, $3 para PostgreSQL
+    let paramIndex = 1;
+    const pgSql = sql.replace(/\?/g, () => `$${paramIndex++}`);
+    
     return new Promise((resolve, reject) => {
-      pool.query(sql, params, (err, result) => {
+      pool.query(pgSql, params, (err, result) => {
         if (err) reject(err);
         else resolve(result.rows);
       });
@@ -672,8 +680,12 @@ function queryAll(sql, params = []) {
 
 function queryGet(sql, params = []) {
   if (USE_POSTGRES) {
+    // Convertir ? a $1, $2, $3 para PostgreSQL
+    let paramIndex = 1;
+    const pgSql = sql.replace(/\?/g, () => `$${paramIndex++}`);
+    
     return new Promise((resolve, reject) => {
-      pool.query(sql, params, (err, result) => {
+      pool.query(pgSql, params, (err, result) => {
         if (err) reject(err);
         else resolve(result.rows[0] || null);
       });
