@@ -680,10 +680,21 @@ function query(sql, params = []) {
     let paramIndex = 1;
     const pgSql = sql.replace(/\?/g, () => `$${paramIndex++}`);
     
+    // Si es INSERT, agregar RETURNING id
+    const returnSql = pgSql.trim().toUpperCase().startsWith('INSERT') 
+      ? pgSql + ' RETURNING id' 
+      : pgSql;
+    
     return new Promise((resolve, reject) => {
-      pool.query(pgSql, params, (err, result) => {
+      pool.query(returnSql, params, (err, result) => {
         if (err) reject(err);
-        else resolve(result);
+        else {
+          if (result.rows && result.rows.length > 0 && result.rows[0].id) {
+            resolve({ insertId: result.rows[0].id, rowsAffected: result.rowCount });
+          } else {
+            resolve({ insertId: null, rowsAffected: result.rowCount });
+          }
+        }
       });
     });
   } else {
