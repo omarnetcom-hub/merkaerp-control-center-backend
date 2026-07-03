@@ -90,6 +90,133 @@ router.get('/:id', authenticateToken, async (req, res) => {
   }
 });
 
+// POST /api/v1/clients/sync - Sincronizar cliente sin autenticación (para Control Center)
+router.post('/sync', async (req, res) => {
+  const db = getDatabase();
+  const { 
+    id,
+    name, 
+    nit, 
+    city, 
+    country, 
+    status, 
+    plan, 
+    contractValue, 
+    renewalDate, 
+    usageScore,
+    createdAt,
+    taxRate,
+    billingType,
+    billingDay,
+    contactName,
+    contactPhone,
+    contactEmail,
+    contactRole,
+    notes,
+    resellerId,
+    password
+  } = req.body;
+
+  try {
+    if (id) {
+      // Actualizar cliente existente
+      await new Promise((resolve, reject) => {
+        db.run(
+          `UPDATE cc_clients 
+           SET name = ?, nit = ?, city = ?, country = ?, status = ?, plan = ?, 
+               contract_value = ?, renewal_date = ?, usage_score = ?, tax_rate = ?, 
+               billing_type = ?, billing_day = ?, contact_name = ?, contact_phone = ?, 
+               contact_email = ?, contact_role = ?, notes = ?, reseller_id = ?, password = ?, updated_at = ?
+           WHERE id = ?`,
+          [
+            name,
+            nit,
+            city,
+            country,
+            status,
+            plan,
+            contractValue,
+            renewalDate,
+            usageScore,
+            taxRate,
+            billingType,
+            billingDay,
+            contactName,
+            contactPhone,
+            contactEmail,
+            contactRole,
+            notes,
+            resellerId,
+            password,
+            new Date().toISOString(),
+            id
+          ],
+          (err) => {
+            if (err) reject(err);
+            else resolve();
+          }
+        );
+      });
+
+      res.json({
+        success: true,
+        message: 'Client synced successfully'
+      });
+    } else {
+      // Crear nuevo cliente
+      const now = createdAt || new Date().toISOString();
+
+      const lastId = await new Promise((resolve, reject) => {
+        db.run(
+          `INSERT INTO cc_clients (
+            name, nit, city, country, status, plan, contract_value, renewal_date,
+            usage_score, tax_rate, billing_type, billing_day, contact_name, contact_phone, 
+            contact_email, contact_role, notes, reseller_id, created_at, password
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          [
+            name,
+            nit || null,
+            city || null,
+            country || null,
+            status,
+            plan,
+            contractValue || 0,
+            renewalDate,
+            usageScore || 75,
+            taxRate || 19.0,
+            billingType || 'mensual',
+            billingDay || 5,
+            contactName || null,
+            contactPhone || null,
+            contactEmail || null,
+            contactRole || null,
+            notes || null,
+            resellerId || null,
+            now,
+            password
+          ],
+          function(err) {
+            if (err) reject(err);
+            else resolve(this.lastID);
+          }
+        );
+      });
+
+      res.status(201).json({
+        success: true,
+        message: 'Client created successfully',
+        id: lastId
+      });
+    }
+  } catch (error) {
+    console.error('Error syncing client:', error);
+    res.status(500).json({
+      error: 'Internal server error',
+      message: error.message
+    });
+  }
+});
+
 // POST /api/v1/clients - Crear nuevo cliente
 router.post('/', authenticateToken, async (req, res) => {
   const db = getDatabase();
