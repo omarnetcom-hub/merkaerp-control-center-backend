@@ -396,7 +396,8 @@ function createTablesPostgres() {
         contact_role TEXT,
         password TEXT,
         license_type TEXT DEFAULT 'SUSCRIPCION',
-        subscription_months INTEGER DEFAULT 12
+        subscription_months INTEGER DEFAULT 12,
+        updated_at TEXT
       )`,
       
       `CREATE TABLE IF NOT EXISTS cc_resellers (
