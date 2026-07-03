@@ -1,0 +1,22 @@
+services:
+  - type: web
+    name: merka-control-center-backend
+    env: node
+    plan: free
+    buildCommand: npm install
+    startCommand: node src/server.js
+    envVars:
+      - key: PORT
+        value: 3000
+      - key: NODE_ENV
+        value: production
+      - key: DATABASE_URL
+        fromDatabase:
+          name: merka-control-center-db
+          property: connectionString
+
+databases:
+  - name: merka-control-center-db
+    databaseName: merka_control_center
+    user: merka_user
+    plan: free

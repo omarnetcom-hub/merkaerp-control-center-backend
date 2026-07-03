@@ -1,33 +1,48 @@
+const { Pool } = require('pg');
 const sqlite3 = require('sqlite3').verbose();
 const path = require('path');
 const fs = require('fs');
 
-const DB_PATH = process.env.DB_PATH || './data/control_center.db';
+// Usar PostgreSQL en producción (Render) o SQLite localmente
+const USE_POSTGRES = process.env.DATABASE_URL !== undefined;
 
-// Asegurar que el directorio de datos existe
-const dataDir = path.dirname(DB_PATH);
-if (!fs.existsSync(dataDir)) {
-  fs.mkdirSync(dataDir, { recursive: true });
-}
-
+let pool;
 let db;
 
 function initializeDatabase() {
-  return new Promise((resolve, reject) => {
-    db = new sqlite3.Database(DB_PATH, (err) => {
-      if (err) {
-        reject(err);
-      } else {
-        console.log('Conectado a SQLite:', DB_PATH);
-        createTables()
-          .then(() => resolve())
-          .catch(reject);
-      }
+  if (USE_POSTGRES) {
+    // PostgreSQL para producción en Render
+    pool = new Pool({
+      connectionString: process.env.DATABASE_URL,
+      ssl: { rejectUnauthorized: false }
     });
-  });
+
+    console.log('Conectado a PostgreSQL');
+    return createTablesPostgres();
+  } else {
+    // SQLite para desarrollo local
+    const DB_PATH = process.env.DB_PATH || './data/control_center.db';
+    const dataDir = path.dirname(DB_PATH);
+    if (!fs.existsSync(dataDir)) {
+      fs.mkdirSync(dataDir, { recursive: true });
+    }
+
+    return new Promise((resolve, reject) => {
+      db = new sqlite3.Database(DB_PATH, (err) => {
+        if (err) {
+          reject(err);
+        } else {
+          console.log('Conectado a SQLite:', DB_PATH);
+          createTablesSQLite()
+            .then(() => resolve())
+            .catch(reject);
+        }
+      });
+    });
+  }
 }
 
-function createTables() {
+function createTablesSQLite() {
   return new Promise((resolve, reject) => {
     const tables = [
       // Tabla de instalaciones
@@ -324,6 +339,264 @@ function createTables() {
   });
 }
 
+function createTablesPostgres() {
+  return new Promise((resolve, reject) => {
+    const tables = [
+      // Tabla de instalaciones
+      `CREATE TABLE IF NOT EXISTS installations (
+        id TEXT PRIMARY KEY,
+        company_name TEXT NOT NULL,
+        tax_id TEXT,
+        version TEXT NOT NULL,
+        os TEXT NOT NULL,
+        license_status TEXT DEFAULT 'local',
+        license_plan TEXT DEFAULT 'unknown',
+        license_expiry TEXT,
+        status TEXT DEFAULT 'active',
+        blocked INTEGER DEFAULT 0,
+        blocked_reason TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT,
+        last_heartbeat TEXT
+      )`,
+      
+      // Tabla de heartbeats
+      `CREATE TABLE IF NOT EXISTS heartbeats (
+        id SERIAL PRIMARY KEY,
+        installation_id TEXT NOT NULL,
+        company_name TEXT,
+        tax_id TEXT,
+        version TEXT,
+        os TEXT,
+        license_status TEXT,
+        license_plan TEXT,
+        license_expiry TEXT,
+        sync_status TEXT,
+        database_status TEXT,
+        critical_errors INTEGER DEFAULT 0,
+        update_available INTEGER DEFAULT 0,
+        update_version TEXT,
+        metrics TEXT,
+        received_at TEXT NOT NULL,
+        FOREIGN KEY (installation_id) REFERENCES installations(id)
+      )`,
+      
+      // Tabla de eventos de telemetría
+      `CREATE TABLE IF NOT EXISTS telemetry_events (
+        id SERIAL PRIMARY KEY,
+        installation_id TEXT,
+        company_name TEXT,
+        tax_id TEXT,
+        event TEXT NOT NULL,
+        module TEXT,
+        severity TEXT DEFAULT 'info',
+        received_at TEXT NOT NULL,
+        FOREIGN KEY (installation_id) REFERENCES installations(id)
+      )`,
+      
+      // Tabla de comandos remotos
+      `CREATE TABLE IF NOT EXISTS remote_commands (
+        id TEXT PRIMARY KEY,
+        installation_id TEXT NOT NULL,
+        action TEXT NOT NULL,
+        params TEXT,
+        status TEXT DEFAULT 'pending',
+        created_at TEXT NOT NULL,
+        sent_at TEXT,
+        acknowledged_at TEXT,
+        result TEXT,
+        FOREIGN KEY (installation_id) REFERENCES installations(id)
+      )`,
+      
+      // Tabla de actualizaciones
+      `CREATE TABLE IF NOT EXISTS updates (
+        id SERIAL PRIMARY KEY,
+        version TEXT NOT NULL,
+        canal TEXT NOT NULL,
+        fecha_publicacion TEXT NOT NULL,
+        url_descarga TEXT NOT NULL,
+        tamano_bytes INTEGER NOT NULL,
+        sha256 TEXT NOT NULL,
+        notas TEXT,
+        obligatoria INTEGER DEFAULT 0,
+        created_at TEXT NOT NULL
+      )`,
+      
+      // Tabla de licencias
+      `CREATE TABLE IF NOT EXISTS licenses (
+        id TEXT PRIMARY KEY,
+        installation_id TEXT UNIQUE NOT NULL,
+        plan TEXT NOT NULL,
+        estado TEXT NOT NULL,
+        fecha_expiracion TEXT NOT NULL,
+        modulos TEXT,
+        limite_db_mb INTEGER,
+        created_at TEXT NOT NULL,
+        updated_at TEXT,
+        FOREIGN KEY (installation_id) REFERENCES installations(id)
+      )`,
+      
+      // Tabla de clientes (del Control Center)
+      `CREATE TABLE IF NOT EXISTS cc_clients (
+        id SERIAL PRIMARY KEY,
+        name TEXT NOT NULL,
+        nit TEXT,
+        city TEXT,
+        country TEXT,
+        status TEXT NOT NULL,
+        plan TEXT NOT NULL,
+        contract_value REAL NOT NULL DEFAULT 0,
+        renewal_date TEXT NOT NULL,
+        usage_score INTEGER NOT NULL DEFAULT 0,
+        created_at TEXT NOT NULL,
+        reseller_id INTEGER,
+        tax_rate REAL NOT NULL DEFAULT 19.0,
+        billing_type TEXT NOT NULL DEFAULT 'mensual',
+        billing_day INTEGER NOT NULL DEFAULT 5,
+        notes TEXT,
+        contact_name TEXT,
+        contact_phone TEXT,
+        contact_email TEXT,
+        contact_role TEXT,
+        password TEXT,
+        license_type TEXT DEFAULT 'SUSCRIPCION',
+        subscription_months INTEGER DEFAULT 12
+      )`,
+      
+      // Tabla de licencias
+      `CREATE TABLE IF NOT EXISTS cc_licenses (
+        id SERIAL PRIMARY KEY,
+        client_id INTEGER NOT NULL,
+        type TEXT NOT NULL,
+        status TEXT NOT NULL,
+        expires_at TEXT NOT NULL,
+        max_users INTEGER NOT NULL,
+        max_devices INTEGER NOT NULL,
+        max_branches INTEGER NOT NULL,
+        modules TEXT NOT NULL,
+        token_hint TEXT,
+        updated_at TEXT NOT NULL,
+        FOREIGN KEY (client_id) REFERENCES cc_clients(id)
+      )`,
+      
+      // Tabla de revendedores
+      `CREATE TABLE IF NOT EXISTS cc_resellers (
+        id SERIAL PRIMARY KEY,
+        name TEXT NOT NULL,
+        nit TEXT,
+        contact TEXT,
+        phone TEXT,
+        email TEXT,
+        address TEXT,
+        city TEXT,
+        country TEXT,
+        status TEXT NOT NULL,
+        tier TEXT NOT NULL,
+        commission_rate REAL NOT NULL DEFAULT 0.1,
+        created_at TEXT NOT NULL
+      )`,
+      
+      // Tabla de leads
+      `CREATE TABLE IF NOT EXISTS cc_leads (
+        id SERIAL PRIMARY KEY,
+        name TEXT NOT NULL,
+        company TEXT,
+        email TEXT,
+        phone TEXT,
+        stage TEXT NOT NULL,
+        value REAL NOT NULL DEFAULT 0,
+        next_action_at TEXT,
+        notes TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT
+      )`,
+      
+      // Tabla de tickets
+      `CREATE TABLE IF NOT EXISTS cc_tickets (
+        id SERIAL PRIMARY KEY,
+        client_id INTEGER,
+        subject TEXT NOT NULL,
+        description TEXT,
+        priority TEXT NOT NULL,
+        status TEXT NOT NULL,
+        assigned_to INTEGER,
+        created_at TEXT NOT NULL,
+        updated_at TEXT,
+        resolved_at TEXT,
+        FOREIGN KEY (client_id) REFERENCES cc_clients(id)
+      )`,
+      
+      // Tabla de facturas
+      `CREATE TABLE IF NOT EXISTS cc_invoices (
+        id SERIAL PRIMARY KEY,
+        client_id INTEGER NOT NULL,
+        invoice_number TEXT NOT NULL,
+        amount REAL NOT NULL,
+        currency TEXT NOT NULL DEFAULT 'COP',
+        status TEXT NOT NULL,
+        due_date TEXT NOT NULL,
+        paid_at TEXT,
+        created_at TEXT NOT NULL,
+        FOREIGN KEY (client_id) REFERENCES cc_clients(id)
+      )`,
+      
+      // Tabla de pagos
+      `CREATE TABLE IF NOT EXISTS cc_payments (
+        id SERIAL PRIMARY KEY,
+        invoice_id INTEGER NOT NULL,
+        amount REAL NOT NULL,
+        payment_method TEXT NOT NULL,
+        payment_date TEXT NOT NULL,
+        reference TEXT,
+        created_at TEXT NOT NULL,
+        FOREIGN KEY (invoice_id) REFERENCES cc_invoices(id)
+      )`,
+      
+      // Tabla de usuarios
+      `CREATE TABLE IF NOT EXISTS users (
+        id SERIAL PRIMARY KEY,
+        username TEXT UNIQUE NOT NULL,
+        password_hash TEXT NOT NULL,
+        email TEXT UNIQUE NOT NULL,
+        full_name TEXT NOT NULL,
+        role TEXT NOT NULL DEFAULT 'admin',
+        avatar_path TEXT,
+        created_at TEXT NOT NULL,
+        last_login TEXT,
+        is_active INTEGER NOT NULL DEFAULT 1
+      )`,
+      
+      // Tabla de sesiones
+      `CREATE TABLE IF NOT EXISTS user_sessions (
+        id SERIAL PRIMARY KEY,
+        user_id INTEGER NOT NULL,
+        token TEXT UNIQUE NOT NULL,
+        expires_at TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        FOREIGN KEY (user_id) REFERENCES users (id)
+      )`
+    ];
+
+    let completed = 0;
+    const total = tables.length;
+
+    tables.forEach((sql, index) => {
+      pool.query(sql, (err) => {
+        if (err) {
+          console.error('Error creando tabla PostgreSQL:', err);
+          reject(err);
+        } else {
+          completed++;
+          if (completed === total) {
+            console.log('Todas las tablas PostgreSQL creadas exitosamente');
+            resolve();
+          }
+        }
+      });
+    });
+  });
+}
+
 function createIndexes() {
   return new Promise((resolve, reject) => {
     const indexes = [
@@ -366,6 +639,9 @@ function createIndexes() {
 }
 
 function getDatabase() {
+  if (USE_POSTGRES) {
+    return pool;
+  }
   return db;
 }
 
