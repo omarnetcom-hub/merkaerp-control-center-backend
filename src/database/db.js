@@ -578,6 +578,45 @@ function createTablesPostgres() {
           completed++;
           if (completed === total) {
             console.log('Todas las tablas PostgreSQL creadas exitosamente');
+            // Agregar columnas faltantes si existen
+            addMissingColumns()
+              .then(() => resolve())
+              .catch(reject);
+          }
+        }
+      });
+    });
+  });
+}
+
+function addMissingColumns() {
+  return new Promise((resolve, reject) => {
+    const migrations = [
+      // Agregar updated_at a cc_clients si no existe
+      `ALTER TABLE cc_clients ADD COLUMN IF NOT EXISTS updated_at TEXT`,
+      // Agregar license_type a cc_clients si no existe
+      `ALTER TABLE cc_clients ADD COLUMN IF NOT EXISTS license_type TEXT DEFAULT 'SUSCRIPCION'`,
+      // Agregar subscription_months a cc_clients si no existe
+      `ALTER TABLE cc_clients ADD COLUMN IF NOT EXISTS subscription_months INTEGER DEFAULT 12`
+    ];
+
+    let completed = 0;
+    const total = migrations.length;
+
+    migrations.forEach((sql, index) => {
+      pool.query(sql, (err) => {
+        if (err) {
+          console.error('Error en migración:', err);
+          // No rechazar si la columna ya existe
+          completed++;
+          if (completed === total) {
+            console.log('Migraciones completadas');
+            resolve();
+          }
+        } else {
+          completed++;
+          if (completed === total) {
+            console.log('Migraciones completadas');
             resolve();
           }
         }
