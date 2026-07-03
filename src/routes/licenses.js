@@ -1,6 +1,6 @@
 const express = require('express');
 const router = express.Router();
-const { getDatabase } = require('../database/db');
+const { getDatabase, queryGet, queryAll, query } = require('../database/db');
 const { authenticateToken } = require('./auth');
 const jwt = require('jsonwebtoken');
 
@@ -14,7 +14,6 @@ function generateLicenseToken(payload) {
 
 // POST /api/v1/licenses/activate - Activar licencia (sin auth para uso de MerkaERP)
 router.post('/activate', async (req, res) => {
-  const db = getDatabase();
   const { email, password, hardware_fingerprint, license_type } = req.body;
 
   if (!email || !password || !hardware_fingerprint) {
@@ -26,16 +25,10 @@ router.post('/activate', async (req, res) => {
 
   try {
     // Validar credenciales contra la base de datos del Control Center
-    const client = await new Promise((resolve, reject) => {
-      db.get(
-        `SELECT * FROM cc_clients WHERE contact_email = ? AND password = ?`,
-        [email, password],
-        (err, row) => {
-          if (err) reject(err);
-          else resolve(row);
-        }
-      );
-    });
+    const client = await queryGet(
+      `SELECT * FROM cc_clients WHERE contact_email = ? AND password = ?`,
+      [email, password]
+    );
 
     if (!client) {
       return res.status(401).json({ 
@@ -89,32 +82,26 @@ router.post('/activate', async (req, res) => {
 
     // Registrar instalación en la base de datos
     const installationId = `MERKA-${Date.now()}-${Math.random().toString(36).substr(2, 9).toUpperCase()}`;
-    await new Promise((resolve, reject) => {
-      db.run(
-        `INSERT INTO installations (
-          id, company_name, tax_id, version, os, license_status, 
-          license_plan, license_expiry, status, created_at, updated_at, last_heartbeat
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        [
-          installationId,
-          client.name,
-          client.nit,
-          '1.0.0',
-          'Windows',
-          'online',
-          finalLicenseType,
-          expiresAt,
-          'active',
-          new Date().toISOString(),
-          new Date().toISOString(),
-          new Date().toISOString()
-        ],
-        (err) => {
-          if (err) reject(err);
-          else resolve();
-        }
-      );
-    });
+    await query(
+      `INSERT INTO installations (
+        id, company_name, tax_id, version, os, license_status, 
+        license_plan, license_expiry, status, created_at, updated_at, last_heartbeat
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        installationId,
+        client.name,
+        client.nit,
+        '1.0.0',
+        'Windows',
+        'online',
+        finalLicenseType,
+        expiresAt,
+        'active',
+        new Date().toISOString(),
+        new Date().toISOString(),
+        new Date().toISOString()
+      ]
+    );
 
     res.json({
       success: true,

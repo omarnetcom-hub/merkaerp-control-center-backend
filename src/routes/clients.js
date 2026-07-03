@@ -1,35 +1,29 @@
 const express = require('express');
 const router = express.Router();
-const { getDatabase } = require('../database/db');
+const { getDatabase, queryAll, queryGet, query } = require('../database/db');
 const { authenticateToken } = require('./auth');
 
 // GET /api/v1/clients - Listar todos los clientes
 router.get('/', authenticateToken, async (req, res) => {
-  const db = getDatabase();
   const { status, plan } = req.query;
   
   try {
-    let query = 'SELECT * FROM cc_clients';
+    let sql = 'SELECT * FROM cc_clients';
     const params = [];
     
     if (status) {
-      query += ' WHERE status = ?';
+      sql += ' WHERE status = ?';
       params.push(status);
     }
     
     if (plan) {
-      query += status ? ' AND plan = ?' : ' WHERE plan = ?';
+      sql += status ? ' AND plan = ?' : ' WHERE plan = ?';
       params.push(plan);
     }
     
-    query += ' ORDER BY created_at DESC';
+    sql += ' ORDER BY created_at DESC';
     
-    const clients = await new Promise((resolve, reject) => {
-      db.all(query, params, (err, rows) => {
-        if (err) reject(err);
-        else resolve(rows);
-      });
-    });
+    const clients = await queryAll(sql, params);
 
     res.json({
       success: true,
@@ -47,16 +41,10 @@ router.get('/', authenticateToken, async (req, res) => {
 
 // GET /api/v1/clients/:id - Obtener detalles de un cliente
 router.get('/:id', authenticateToken, async (req, res) => {
-  const db = getDatabase();
   const { id } = req.params;
   
   try {
-    const client = await new Promise((resolve, reject) => {
-      db.get('SELECT * FROM cc_clients WHERE id = ?', [id], (err, row) => {
-        if (err) reject(err);
-        else resolve(row);
-      });
-    });
+    const client = await queryGet('SELECT * FROM cc_clients WHERE id = ?', [id]);
 
     if (!client) {
       return res.status(404).json({
@@ -65,16 +53,10 @@ router.get('/:id', authenticateToken, async (req, res) => {
     }
 
     // Obtener licencias del cliente
-    const licenses = await new Promise((resolve, reject) => {
-      db.all(
-        'SELECT * FROM cc_licenses WHERE client_id = ? ORDER BY expires_at DESC',
-        [id],
-        (err, rows) => {
-          if (err) reject(err);
-          else resolve(rows);
-        }
-      );
-    });
+    const licenses = await queryAll(
+      'SELECT * FROM cc_licenses WHERE client_id = ? ORDER BY expires_at DESC',
+      [id]
+    );
 
     res.json({
       success: true,
@@ -92,7 +74,6 @@ router.get('/:id', authenticateToken, async (req, res) => {
 
 // POST /api/v1/clients/sync - Sincronizar cliente sin autenticación (para Control Center)
 router.post('/sync', async (req, res) => {
-  const db = getDatabase();
   const { 
     id,
     name, 
@@ -122,51 +103,40 @@ router.post('/sync', async (req, res) => {
   try {
     if (id) {
       // Actualizar cliente existente
-      await new Promise((resolve, reject) => {
-        db.run(
-          `UPDATE cc_clients 
-           SET name = ?, nit = ?, city = ?, country = ?, status = ?, plan = ?, 
-               contract_value = ?, renewal_date = ?, usage_score = ?, tax_rate = ?, 
-               billing_type = ?, billing_day = ?, contact_name = ?, contact_phone = ?, 
-               contact_email = ?, contact_role = ?, notes = ?, reseller_id = ?, password = ?, updated_at = ?
-           WHERE id = ?`,
-          [
-            name,
-            nit,
-            city,
-            country,
-            status,
-            plan,
-            contractValue,
-            renewalDate,
-            usageScore,
-            taxRate,
-            billingType,
-            billingDay,
-            contactName,
-            contactPhone,
-            contactEmail,
-            contactRole,
-            notes,
-            resellerId,
-            password,
-            new Date().toISOString(),
-            id
-          ],
-          (err) => {
-            if (err) reject(err);
-            else resolve();
-          }
-        );
-      });
+      await query(
+        `UPDATE cc_clients 
+         SET name = ?, nit = ?, city = ?, country = ?, status = ?, plan = ?, 
+             contract_value = ?, renewal_date = ?, usage_score = ?, tax_rate = ?, 
+             billing_type = ?, billing_day = ?, contact_name = ?, contact_phone = ?, 
+             contact_email = ?, contact_role = ?, notes = ?, reseller_id = ?, password = ?, updated_at = ?
+         WHERE id = ?`,
+        [
+          name,
+          nit,
+          city,
+          country,
+          status,
+          plan,
+          contractValue,
+          renewalDate,
+          usageScore,
+          taxRate,
+          billingType,
+          billingDay,
+          contactName,
+          contactPhone,
+          contactEmail,
+          contactRole,
+          notes,
+          resellerId,
+          password,
+          new Date().toISOString(),
+          id
+        ]
+      );
 
       // Actualizar o crear licencia del cliente
-      const existingLicense = await new Promise((resolve, reject) => {
-        db.get('SELECT * FROM cc_licenses WHERE client_id = ?', [id], (err, row) => {
-          if (err) reject(err);
-          else resolve(row);
-        });
-      });
+      const existingLicense = await queryGet('SELECT * FROM cc_licenses WHERE client_id = ?', [id]);
 
       const expiresAt = licenseType === 'PERPETUA' 
         ? '2099-12-31' 
@@ -174,46 +144,34 @@ router.post('/sync', async (req, res) => {
 
       if (existingLicense) {
         // Actualizar licencia existente
-        await new Promise((resolve, reject) => {
-          db.run(
-            `UPDATE cc_licenses 
-             SET type = ?, expires_at = ?, license_type = ?, updated_at = ?
-             WHERE id = ?`,
-            [plan, expiresAt, licenseType, new Date().toISOString(), existingLicense.id],
-            (err) => {
-              if (err) reject(err);
-              else resolve();
-            }
-          );
-        });
+        await query(
+          `UPDATE cc_licenses 
+           SET type = ?, expires_at = ?, updated_at = ?
+           WHERE id = ?`,
+          [plan, expiresAt, new Date().toISOString(), existingLicense.id]
+        );
       } else {
         // Crear nueva licencia
         const licenseId = Math.floor(Math.random() * 10000) + 1000;
-        await new Promise((resolve, reject) => {
-          db.run(
-            `INSERT INTO cc_licenses (
-              id, client_id, type, status, expires_at, max_users, max_devices, 
-              max_branches, modules, token_hint, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-            [
-              licenseId,
-              id,
-              plan,
-              'ACTIVO',
-              expiresAt,
-              plan === 'Empresarial' ? 30 : (plan === 'Profesional' ? 8 : 1),
-              plan === 'Empresarial' ? 50 : (plan === 'Profesional' ? 12 : 1),
-              plan === 'Empresarial' ? 10 : (plan === 'Profesional' ? 2 : 1),
-              'sales,purchases,inventory,cash,accounting,reports',
-              licenseType,
-              new Date().toISOString()
-            ],
-            (err) => {
-              if (err) reject(err);
-              else resolve();
-            }
-          );
-        });
+        await query(
+          `INSERT INTO cc_licenses (
+            id, client_id, type, status, expires_at, max_users, max_devices, 
+            max_branches, modules, token_hint, updated_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          [
+            licenseId,
+            id,
+            plan,
+            'ACTIVO',
+            expiresAt,
+            plan === 'Empresarial' ? 30 : (plan === 'Profesional' ? 8 : 1),
+            plan === 'Empresarial' ? 50 : (plan === 'Profesional' ? 12 : 1),
+            plan === 'Empresarial' ? 10 : (plan === 'Profesional' ? 2 : 1),
+            'sales,purchases,inventory,cash,accounting,reports',
+            licenseType,
+            new Date().toISOString()
+          ]
+        );
       }
 
       res.json({
@@ -224,41 +182,35 @@ router.post('/sync', async (req, res) => {
       // Crear nuevo cliente
       const now = createdAt || new Date().toISOString();
 
-      const lastId = await new Promise((resolve, reject) => {
-        db.run(
-          `INSERT INTO cc_clients (
-            name, nit, city, country, status, plan, contract_value, renewal_date,
-            usage_score, tax_rate, billing_type, billing_day, contact_name, contact_phone, 
-            contact_email, contact_role, notes, reseller_id, created_at, password
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-          [
-            name,
-            nit || null,
-            city || null,
-            country || null,
-            status,
-            plan,
-            contractValue || 0,
-            renewalDate,
-            usageScore || 75,
-            taxRate || 19.0,
-            billingType || 'mensual',
-            billingDay || 5,
-            contactName || null,
-            contactPhone || null,
-            contactEmail || null,
-            contactRole || null,
-            notes || null,
-            resellerId || null,
-            now,
-            password
-          ],
-          function(err) {
-            if (err) reject(err);
-            else resolve(this.lastID);
-          }
-        );
-      });
+      const lastId = await query(
+        `INSERT INTO cc_clients (
+          name, nit, city, country, status, plan, contract_value, renewal_date,
+          usage_score, tax_rate, billing_type, billing_day, contact_name, contact_phone, 
+          contact_email, contact_role, notes, reseller_id, created_at, password
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          name,
+          nit || null,
+          city || null,
+          country || null,
+          status,
+          plan,
+          contractValue || 0,
+          renewalDate,
+          usageScore || 75,
+          taxRate || 19.0,
+          billingType || 'mensual',
+          billingDay || 5,
+          contactName || null,
+          contactPhone || null,
+          contactEmail || null,
+          contactRole || null,
+          notes || null,
+          resellerId || null,
+          now,
+          password
+        ]
+      );
 
       // Crear licencia para el nuevo cliente
       const expiresAt = licenseType === 'PERPETUA' 
@@ -266,36 +218,30 @@ router.post('/sync', async (req, res) => {
         : new Date(Date.now() + (30 * (subscriptionMonths || 12) * 24 * 60 * 60 * 1000)).toISOString();
 
       const licenseId = Math.floor(Math.random() * 10000) + 1000;
-      await new Promise((resolve, reject) => {
-        db.run(
-          `INSERT INTO cc_licenses (
-            id, client_id, type, status, expires_at, max_users, max_devices, 
-            max_branches, modules, token_hint, updated_at
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-          [
-            licenseId,
-            lastId,
-            plan,
-            'ACTIVO',
-            expiresAt,
-            plan === 'Empresarial' ? 30 : (plan === 'Profesional' ? 8 : 1),
-            plan === 'Empresarial' ? 50 : (plan === 'Profesional' ? 12 : 1),
-            plan === 'Empresarial' ? 10 : (plan === 'Profesional' ? 2 : 1),
-            'sales,purchases,inventory,cash,accounting,reports',
-            licenseType,
-            new Date().toISOString()
-          ],
-          (err) => {
-            if (err) reject(err);
-            else resolve();
-          }
-        );
-      });
+      await query(
+        `INSERT INTO cc_licenses (
+          id, client_id, type, status, expires_at, max_users, max_devices, 
+          max_branches, modules, token_hint, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          licenseId,
+          lastId.insertId,
+          plan,
+          'ACTIVO',
+          expiresAt,
+          plan === 'Empresarial' ? 30 : (plan === 'Profesional' ? 8 : 1),
+          plan === 'Empresarial' ? 50 : (plan === 'Profesional' ? 12 : 1),
+          plan === 'Empresarial' ? 10 : (plan === 'Profesional' ? 2 : 1),
+          'sales,purchases,inventory,cash,accounting,reports',
+          licenseType,
+          new Date().toISOString()
+        ]
+      );
 
       res.status(201).json({
         success: true,
         message: 'Client created successfully',
-        id: lastId
+        id: lastId.insertId
       });
     }
   } catch (error) {

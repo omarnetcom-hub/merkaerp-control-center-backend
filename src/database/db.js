@@ -633,7 +633,65 @@ function getDatabase() {
   return db;
 }
 
+// Helper para ejecutar queries de forma compatible con SQLite y PostgreSQL
+function query(sql, params = []) {
+  if (USE_POSTGRES) {
+    return new Promise((resolve, reject) => {
+      pool.query(sql, params, (err, result) => {
+        if (err) reject(err);
+        else resolve(result);
+      });
+    });
+  } else {
+    return new Promise((resolve, reject) => {
+      db.run(sql, params, function(err) {
+        if (err) reject(err);
+        else resolve({ insertId: this.lastID, rowsAffected: this.changes });
+      });
+    });
+  }
+}
+
+function queryAll(sql, params = []) {
+  if (USE_POSTGRES) {
+    return new Promise((resolve, reject) => {
+      pool.query(sql, params, (err, result) => {
+        if (err) reject(err);
+        else resolve(result.rows);
+      });
+    });
+  } else {
+    return new Promise((resolve, reject) => {
+      db.all(sql, params, (err, rows) => {
+        if (err) reject(err);
+        else resolve(rows);
+      });
+    });
+  }
+}
+
+function queryGet(sql, params = []) {
+  if (USE_POSTGRES) {
+    return new Promise((resolve, reject) => {
+      pool.query(sql, params, (err, result) => {
+        if (err) reject(err);
+        else resolve(result.rows[0] || null);
+      });
+    });
+  } else {
+    return new Promise((resolve, reject) => {
+      db.get(sql, params, (err, row) => {
+        if (err) reject(err);
+        else resolve(row);
+      });
+    });
+  }
+}
+
 module.exports = {
   initializeDatabase,
-  getDatabase
+  getDatabase,
+  query,
+  queryAll,
+  queryGet
 };
