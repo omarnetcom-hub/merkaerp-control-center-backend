@@ -189,7 +189,7 @@ router.post('/sync', async (req, res) => {
           name, nit, city, country, status, plan, contract_value, renewal_date,
           usage_score, tax_rate, billing_type, billing_day, contact_name, contact_phone, 
           contact_email, contact_role, notes, reseller_id, created_at, password, license_type, subscription_months
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           name,
           nit || null,
