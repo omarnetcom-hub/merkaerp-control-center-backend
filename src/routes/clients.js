@@ -74,31 +74,29 @@ router.get('/:id', authenticateToken, async (req, res) => {
 
 // POST /api/v1/clients/sync - Sincronizar cliente sin autenticación (para Control Center)
 router.post('/sync', async (req, res) => {
-  const { 
-    id,
-    name, 
-    nit, 
-    city, 
-    country, 
-    status, 
-    plan, 
-    contractValue, 
-    renewalDate, 
-    usageScore,
-    createdAt,
-    taxRate,
-    billingType,
-    billingDay,
-    contactName,
-    contactPhone,
-    contactEmail,
-    contactRole,
-    notes,
-    resellerId,
-    password,
-    licenseType,
-    subscriptionMonths
-  } = req.body;
+  const id = req.body.id;
+  const name = req.body.name;
+  const nit = req.body.nit;
+  const city = req.body.city;
+  const country = req.body.country;
+  const status = req.body.status;
+  const plan = req.body.plan;
+  const contractValue = req.body.contractValue !== undefined ? req.body.contractValue : req.body.contract_value;
+  const renewalDate = req.body.renewalDate !== undefined ? req.body.renewalDate : req.body.renewal_date;
+  const usageScore = req.body.usageScore !== undefined ? req.body.usageScore : req.body.usage_score;
+  const createdAt = req.body.createdAt !== undefined ? req.body.createdAt : req.body.created_at;
+  const taxRate = req.body.taxRate !== undefined ? req.body.taxRate : req.body.tax_rate;
+  const billingType = req.body.billingType !== undefined ? req.body.billingType : req.body.billing_type;
+  const billingDay = req.body.billingDay !== undefined ? req.body.billingDay : req.body.billing_day;
+  const contactName = req.body.contactName !== undefined ? req.body.contactName : req.body.contact_name;
+  const contactPhone = req.body.contactPhone !== undefined ? req.body.contactPhone : req.body.contact_phone;
+  const contactEmail = req.body.contactEmail !== undefined ? req.body.contactEmail : req.body.contact_email;
+  const contactRole = req.body.contactRole !== undefined ? req.body.contactRole : req.body.contact_role;
+  const notes = req.body.notes;
+  const resellerId = req.body.resellerId !== undefined ? req.body.resellerId : req.body.reseller_id;
+  const password = req.body.password;
+  const licenseType = req.body.licenseType !== undefined ? req.body.licenseType : req.body.license_type;
+  const subscriptionMonths = req.body.subscriptionMonths !== undefined ? req.body.subscriptionMonths : req.body.subscription_months;
 
   console.log('Datos recibidos en sync:', { id, name, contactEmail, password });
 

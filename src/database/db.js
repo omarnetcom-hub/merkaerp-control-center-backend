@@ -666,9 +666,99 @@ function createIndexes() {
   });
 }
 
+// Helper para traducir funciones SQL de SQLite a PostgreSQL
+function translateSqlToPostgres(sql) {
+  let pgSql = sql;
+  
+  // Traducir funciones de fecha SQLite a PostgreSQL (manteniendo formato ISO string lexicográfico)
+  pgSql = pgSql.replace(/datetime\('now'\)/gi, "TO_CHAR(timezone('utc', NOW()), 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"')");
+  pgSql = pgSql.replace(/datetime\('now',\s*'-24 hours'\)/gi, "TO_CHAR(timezone('utc', NOW() - INTERVAL '24 hours'), 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"')");
+  pgSql = pgSql.replace(/datetime\('now',\s*'\+30 days'\)/gi, "TO_CHAR(timezone('utc', NOW() + INTERVAL '30 days'), 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"')");
+  pgSql = pgSql.replace(/datetime\('now',\s*'-7 days'\)/gi, "TO_CHAR(timezone('utc', NOW() - INTERVAL '7 days'), 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"')");
+  
+  return pgSql;
+}
+
+// Wrapper para emular la API de SQLite (db.all, db.get, db.run) usando el Pool de PostgreSQL
+function pgDbWrapper(pgPool) {
+  return {
+    all: (sql, params, callback) => {
+      if (typeof params === 'function') {
+        callback = params;
+        params = [];
+      }
+      
+      const pgSqlTranslated = translateSqlToPostgres(sql);
+      let paramIndex = 1;
+      const pgSql = pgSqlTranslated.replace(/\?/g, () => `$${paramIndex++}`);
+      
+      pgPool.query(pgSql, params, (err, result) => {
+        if (err) {
+          console.error('Error en pgDbWrapper.all:', err, 'SQL:', pgSql);
+          if (callback) callback(err);
+        } else {
+          if (callback) callback(null, result.rows);
+        }
+      });
+    },
+    get: (sql, params, callback) => {
+      if (typeof params === 'function') {
+        callback = params;
+        params = [];
+      }
+      
+      const pgSqlTranslated = translateSqlToPostgres(sql);
+      let paramIndex = 1;
+      const pgSql = pgSqlTranslated.replace(/\?/g, () => `$${paramIndex++}`);
+      
+      pgPool.query(pgSql, params, (err, result) => {
+        if (err) {
+          console.error('Error en pgDbWrapper.get:', err, 'SQL:', pgSql);
+          if (callback) callback(err);
+        } else {
+          if (callback) callback(null, result.rows[0] || null);
+        }
+      });
+    },
+    run: (sql, params, callback) => {
+      if (typeof params === 'function') {
+        callback = params;
+        params = [];
+      }
+      
+      const pgSqlTranslated = translateSqlToPostgres(sql);
+      let paramIndex = 1;
+      const pgSql = pgSqlTranslated.replace(/\?/g, () => `$${paramIndex++}`);
+      
+      // Si es INSERT, agregar RETURNING id para emular lastID de SQLite
+      const returnSql = pgSql.trim().toUpperCase().startsWith('INSERT') 
+        ? pgSql + ' RETURNING id' 
+        : pgSql;
+      
+      pgPool.query(returnSql, params, (err, result) => {
+        if (err) {
+          console.error('Error en pgDbWrapper.run:', err, 'SQL:', returnSql);
+          if (callback) callback(err);
+        } else {
+          const mockThis = {
+            lastID: result.rows && result.rows.length > 0 ? result.rows[0].id : null,
+            changes: result.rowCount
+          };
+          if (callback) callback.call(mockThis, null);
+        }
+      });
+    }
+  };
+}
+
+let wrappedDbInstance = null;
+
 function getDatabase() {
   if (USE_POSTGRES) {
-    return pool;
+    if (!wrappedDbInstance) {
+      wrappedDbInstance = pgDbWrapper(pool);
+    }
+    return wrappedDbInstance;
   }
   return db;
 }
@@ -676,9 +766,9 @@ function getDatabase() {
 // Helper para ejecutar queries de forma compatible con SQLite y PostgreSQL
 function query(sql, params = []) {
   if (USE_POSTGRES) {
-    // Convertir ? a $1, $2, $3 para PostgreSQL
+    const pgSqlTranslated = translateSqlToPostgres(sql);
     let paramIndex = 1;
-    const pgSql = sql.replace(/\?/g, () => `$${paramIndex++}`);
+    const pgSql = pgSqlTranslated.replace(/\?/g, () => `$${paramIndex++}`);
     
     // Si es INSERT, agregar RETURNING id
     const returnSql = pgSql.trim().toUpperCase().startsWith('INSERT') 
@@ -687,8 +777,10 @@ function query(sql, params = []) {
     
     return new Promise((resolve, reject) => {
       pool.query(returnSql, params, (err, result) => {
-        if (err) reject(err);
-        else {
+        if (err) {
+          console.error('Error en query helper:', err, 'SQL:', returnSql);
+          reject(err);
+        } else {
           if (result.rows && result.rows.length > 0 && result.rows[0].id) {
             resolve({ insertId: result.rows[0].id, rowsAffected: result.rowCount });
           } else {
@@ -709,14 +801,16 @@ function query(sql, params = []) {
 
 function queryAll(sql, params = []) {
   if (USE_POSTGRES) {
-    // Convertir ? a $1, $2, $3 para PostgreSQL
+    const pgSqlTranslated = translateSqlToPostgres(sql);
     let paramIndex = 1;
-    const pgSql = sql.replace(/\?/g, () => `$${paramIndex++}`);
+    const pgSql = pgSqlTranslated.replace(/\?/g, () => `$${paramIndex++}`);
     
     return new Promise((resolve, reject) => {
       pool.query(pgSql, params, (err, result) => {
-        if (err) reject(err);
-        else resolve(result.rows);
+        if (err) {
+          console.error('Error en queryAll helper:', err, 'SQL:', pgSql);
+          reject(err);
+        } else resolve(result.rows);
       });
     });
   } else {
@@ -731,14 +825,16 @@ function queryAll(sql, params = []) {
 
 function queryGet(sql, params = []) {
   if (USE_POSTGRES) {
-    // Convertir ? a $1, $2, $3 para PostgreSQL
+    const pgSqlTranslated = translateSqlToPostgres(sql);
     let paramIndex = 1;
-    const pgSql = sql.replace(/\?/g, () => `$${paramIndex++}`);
+    const pgSql = pgSqlTranslated.replace(/\?/g, () => `$${paramIndex++}`);
     
     return new Promise((resolve, reject) => {
       pool.query(pgSql, params, (err, result) => {
-        if (err) reject(err);
-        else resolve(result.rows[0] || null);
+        if (err) {
+          console.error('Error en queryGet helper:', err, 'SQL:', pgSql);
+          reject(err);
+        } else resolve(result.rows[0] || null);
       });
     });
   } else {
