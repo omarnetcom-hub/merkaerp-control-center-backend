@@ -827,54 +827,34 @@ router.post('/commands/:id/ack', async (req, res) => {
 
 // POST /api/v1/admin/clean-test-data - Limpiar datos de prueba
 router.post('/clean-test-data', async (req, res) => {
-  const db = getDatabase();
-  
   try {
     console.log('Iniciando limpieza de datos de prueba...');
     
     // Eliminar instalaciones de prueba
-    const deleteInstallations = await new Promise((resolve, reject) => {
-      db.run(
-        "DELETE FROM installations WHERE company_name LIKE '%Test%' OR company_name LIKE '%Verify%' OR company_name LIKE '%New%'",
-        function(err) {
-          if (err) reject(err);
-          else resolve({ rowCount: this.changes });
-        }
-      );
-    });
-    console.log(`Eliminadas ${deleteInstallations.rowCount} instalaciones de prueba`);
+    const deleteInstallations = await query(
+      "DELETE FROM installations WHERE company_name LIKE '%Test%' OR company_name LIKE '%Verify%' OR company_name LIKE '%New%'"
+    );
+    console.log(`Eliminadas ${deleteInstallations.rowsAffected} instalaciones de prueba`);
     
     // Eliminar licencias de prueba
-    const deleteLicenses = await new Promise((resolve, reject) => {
-      db.run(
-        "DELETE FROM cc_licenses WHERE client_id IN (SELECT id FROM cc_clients WHERE name LIKE '%Test%' OR name LIKE '%Verify%' OR name LIKE '%New%')",
-        function(err) {
-          if (err) reject(err);
-          else resolve({ rowCount: this.changes });
-        }
-      );
-    });
-    console.log(`Eliminadas ${deleteLicenses.rowCount} licencias de prueba`);
+    const deleteLicenses = await query(
+      "DELETE FROM cc_licenses WHERE client_id IN (SELECT id FROM cc_clients WHERE name LIKE '%Test%' OR name LIKE '%Verify%' OR name LIKE '%New%')"
+    );
+    console.log(`Eliminadas ${deleteLicenses.rowsAffected} licencias de prueba`);
     
     // Eliminar clientes de prueba
-    const deleteClients = await new Promise((resolve, reject) => {
-      db.run(
-        "DELETE FROM cc_clients WHERE name LIKE '%Test%' OR name LIKE '%Verify%' OR name LIKE '%New%' OR contact_email LIKE '%test%' OR contact_email LIKE '%verify%' OR contact_email LIKE '%new%'",
-        function(err) {
-          if (err) reject(err);
-          else resolve({ rowCount: this.changes });
-        }
-      );
-    });
-    console.log(`Eliminados ${deleteClients.rowCount} clientes de prueba`);
+    const deleteClients = await query(
+      "DELETE FROM cc_clients WHERE name LIKE '%Test%' OR name LIKE '%Verify%' OR name LIKE '%New%' OR contact_email LIKE '%test%' OR contact_email LIKE '%verify%' OR contact_email LIKE '%new%'"
+    );
+    console.log(`Eliminados ${deleteClients.rowsAffected} clientes de prueba`);
     
     res.json({
       success: true,
       message: 'Datos de prueba eliminados exitosamente',
       deleted: {
-        installations: deleteInstallations.rowCount,
-        licenses: deleteLicenses.rowCount,
-        clients: deleteClients.rowCount
+        installations: deleteInstallations.rowsAffected,
+        licenses: deleteLicenses.rowsAffected,
+        clients: deleteClients.rowsAffected
       }
     });
   } catch (error) {
