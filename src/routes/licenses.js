@@ -31,6 +31,8 @@ router.post('/activate', async (req, res) => {
       [email, password]
     );
     console.log('Cliente encontrado:', client);
+    console.log('Tipo de client:', typeof client);
+    console.log('Keys de client:', client ? Object.keys(client) : 'null');
 
     if (!client) {
       return res.status(401).json({ 
