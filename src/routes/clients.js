@@ -105,6 +105,7 @@ router.post('/sync', async (req, res) => {
   try {
     if (id) {
       // Actualizar cliente existente
+      console.log('Actualizando cliente con id:', id, 'y contactEmail:', contactEmail, 'y password:', password);
       await query(
         `UPDATE cc_clients 
          SET name = ?, nit = ?, city = ?, country = ?, status = ?, plan = ?, 
