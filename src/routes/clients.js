@@ -100,6 +100,8 @@ router.post('/sync', async (req, res) => {
     subscriptionMonths
   } = req.body;
 
+  console.log('Datos recibidos en sync:', { id, name, contactEmail, password });
+
   try {
     if (id) {
       // Actualizar cliente existente
