@@ -25,10 +25,12 @@ router.post('/activate', async (req, res) => {
 
   try {
     // Validar credenciales contra la base de datos del Control Center
+    console.log('Buscando cliente con email:', email, 'y password:', password);
     const client = await queryGet(
       `SELECT * FROM cc_clients WHERE contact_email = ? AND password = ?`,
       [email, password]
     );
+    console.log('Cliente encontrado:', client);
 
     if (!client) {
       return res.status(401).json({ 
