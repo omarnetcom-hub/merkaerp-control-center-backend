@@ -1,6 +1,6 @@
 const express = require('express');
 const router = express.Router();
-const { getDatabase } = require('../database/db');
+const { query, queryAll, queryGet } = require('../database/db');
 const { authenticateToken } = require('./auth');
 
 // GET /api/v1/admin/users - Listar todos los usuarios
@@ -818,6 +818,67 @@ router.post('/commands/:id/ack', async (req, res) => {
     });
   } catch (error) {
     console.error('Error acknowledging command:', error);
+    res.status(500).json({
+      error: 'Internal server error',
+      message: error.message
+    });
+  }
+});
+
+// POST /api/v1/admin/clean-test-data - Limpiar datos de prueba
+router.post('/clean-test-data', async (req, res) => {
+  const db = getDatabase();
+  
+  try {
+    console.log('Iniciando limpieza de datos de prueba...');
+    
+    // Eliminar instalaciones de prueba
+    const deleteInstallations = await new Promise((resolve, reject) => {
+      db.run(
+        "DELETE FROM installations WHERE company_name LIKE '%Test%' OR company_name LIKE '%Verify%' OR company_name LIKE '%New%'",
+        function(err) {
+          if (err) reject(err);
+          else resolve({ rowCount: this.changes });
+        }
+      );
+    });
+    console.log(`Eliminadas ${deleteInstallations.rowCount} instalaciones de prueba`);
+    
+    // Eliminar licencias de prueba
+    const deleteLicenses = await new Promise((resolve, reject) => {
+      db.run(
+        "DELETE FROM cc_licenses WHERE client_id IN (SELECT id FROM cc_clients WHERE name LIKE '%Test%' OR name LIKE '%Verify%' OR name LIKE '%New%')",
+        function(err) {
+          if (err) reject(err);
+          else resolve({ rowCount: this.changes });
+        }
+      );
+    });
+    console.log(`Eliminadas ${deleteLicenses.rowCount} licencias de prueba`);
+    
+    // Eliminar clientes de prueba
+    const deleteClients = await new Promise((resolve, reject) => {
+      db.run(
+        "DELETE FROM cc_clients WHERE name LIKE '%Test%' OR name LIKE '%Verify%' OR name LIKE '%New%' OR contact_email LIKE '%test%' OR contact_email LIKE '%verify%' OR contact_email LIKE '%new%'",
+        function(err) {
+          if (err) reject(err);
+          else resolve({ rowCount: this.changes });
+        }
+      );
+    });
+    console.log(`Eliminados ${deleteClients.rowCount} clientes de prueba`);
+    
+    res.json({
+      success: true,
+      message: 'Datos de prueba eliminados exitosamente',
+      deleted: {
+        installations: deleteInstallations.rowCount,
+        licenses: deleteLicenses.rowCount,
+        clients: deleteClients.rowCount
+      }
+    });
+  } catch (error) {
+    console.error('Error durante la limpieza:', error);
     res.status(500).json({
       error: 'Internal server error',
       message: error.message
