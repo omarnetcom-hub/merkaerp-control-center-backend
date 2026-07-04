@@ -1,24 +1,17 @@
 const express = require('express');
 const router = express.Router();
-const { getDatabase } = require('../database/db');
+const { query, queryAll, queryGet } = require('../database/db');
 
 // GET /api/v1/installations/:id/commands - Obtener comandos pendientes para una instalación
 router.get('/:id/commands', async (req, res) => {
-  const db = getDatabase();
   const { id } = req.params;
 
   try {
     // Verificar si la instalación está bloqueada
-    const installation = await new Promise((resolve, reject) => {
-      db.get(
-        'SELECT * FROM installations WHERE id = ?',
-        [id],
-        (err, row) => {
-          if (err) reject(err);
-          else resolve(row);
-        }
-      );
-    });
+    const installation = await queryGet(
+      'SELECT * FROM installations WHERE id = ?',
+      [id]
+    );
 
     if (!installation) {
       return res.status(404).json({
@@ -35,18 +28,12 @@ router.get('/:id/commands', async (req, res) => {
     }
 
     // Obtener comandos pendientes
-    const commands = await new Promise((resolve, reject) => {
-      db.all(
-        `SELECT * FROM remote_commands 
-         WHERE installation_id = ? AND status = 'pending'
-         ORDER BY created_at ASC`,
-        [id],
-        (err, rows) => {
-          if (err) reject(err);
-          else resolve(rows);
-        }
-      );
-    });
+    const commands = await queryAll(
+      `SELECT * FROM remote_commands 
+       WHERE installation_id = ? AND status = 'pending'
+       ORDER BY created_at ASC`,
+      [id]
+    );
 
     res.json({
       success: true,
@@ -68,21 +55,14 @@ router.get('/:id/commands', async (req, res) => {
 
 // POST /api/v1/installations/:id/rollback - Solicitar rollback de actualización
 router.post('/:id/rollback', async (req, res) => {
-  const db = getDatabase();
   const { id } = req.params;
 
   try {
     // Verificar que la instalación existe
-    const installation = await new Promise((resolve, reject) => {
-      db.get(
-        'SELECT * FROM installations WHERE id = ?',
-        [id],
-        (err, row) => {
-          if (err) reject(err);
-          else resolve(row);
-        }
-      );
-    });
+    const installation = await queryGet(
+      'SELECT * FROM installations WHERE id = ?',
+      [id]
+    );
 
     if (!installation) {
       return res.status(404).json({
@@ -95,18 +75,12 @@ router.post('/:id/rollback', async (req, res) => {
     const commandId = uuidv4();
     const now = new Date().toISOString();
 
-    await new Promise((resolve, reject) => {
-      db.run(
-        `INSERT INTO remote_commands (
-          id, installation_id, action, params, status, created_at
-        ) VALUES (?, ?, ?, ?, ?, ?)`,
-        [commandId, id, 'rollback_actualizacion', '{}', 'pending', now],
-        (err) => {
-          if (err) reject(err);
-          else resolve();
-        }
-      );
-    });
+    await query(
+      `INSERT INTO remote_commands (
+        id, installation_id, action, params, status, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?)`,
+      [commandId, id, 'rollback_actualizacion', '{}', 'pending', now]
+    );
 
     res.json({
       success: true,
@@ -124,22 +98,15 @@ router.post('/:id/rollback', async (req, res) => {
 
 // POST /api/v1/installations/:id/license - Actualizar licencia de instalación
 router.post('/:id/license', async (req, res) => {
-  const db = getDatabase();
   const { id } = req.params;
   const { plan, estado, fecha_expiracion, modulos, limite_db_mb } = req.body;
 
   try {
     // Verificar que la instalación existe
-    const installation = await new Promise((resolve, reject) => {
-      db.get(
-        'SELECT * FROM installations WHERE id = ?',
-        [id],
-        (err, row) => {
-          if (err) reject(err);
-          else resolve(row);
-        }
-      );
-    });
+    const installation = await queryGet(
+      'SELECT * FROM installations WHERE id = ?',
+      [id]
+    );
 
     if (!installation) {
       return res.status(404).json({
@@ -150,102 +117,72 @@ router.post('/:id/license', async (req, res) => {
     const now = new Date().toISOString();
 
     // Actualizar o crear licencia
-    const existingLicense = await new Promise((resolve, reject) => {
-      db.get(
-        'SELECT * FROM licenses WHERE installation_id = ?',
-        [id],
-        (err, row) => {
-          if (err) reject(err);
-          else resolve(row);
-        }
-      );
-    });
+    const existingLicense = await queryGet(
+      'SELECT * FROM licenses WHERE installation_id = ?',
+      [id]
+    );
 
     if (existingLicense) {
-      await new Promise((resolve, reject) => {
-        db.run(
-          `UPDATE licenses SET 
-            plan = ?, estado = ?, fecha_expiracion = ?, 
-            modulos = ?, limite_db_mb = ?, updated_at = ?
-           WHERE installation_id = ?`,
-          [
-            plan,
-            estado,
-            fecha_expiracion,
-            JSON.stringify(modulos || []),
-            limite_db_mb,
-            now,
-            id
-          ],
-          (err) => {
-            if (err) reject(err);
-            else resolve();
-          }
-        );
-      });
+      await query(
+        `UPDATE licenses SET 
+          plan = ?, estado = ?, fecha_expiracion = ?, 
+          modulos = ?, limite_db_mb = ?, updated_at = ?
+         WHERE installation_id = ?`,
+        [
+          plan,
+          estado,
+          fecha_expiracion,
+          JSON.stringify(modulos || []),
+          limite_db_mb,
+          now,
+          id
+        ]
+      );
     } else {
       const { v4: uuidv4 } = require('uuid');
-      await new Promise((resolve, reject) => {
-        db.run(
-          `INSERT INTO licenses (
-            id, installation_id, plan, estado, fecha_expiracion,
-            modulos, limite_db_mb, created_at, updated_at
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-          [
-            uuidv4(),
-            id,
-            plan,
-            estado,
-            fecha_expiracion,
-            JSON.stringify(modulos || []),
-            limite_db_mb,
-            now,
-            now
-          ],
-          (err) => {
-            if (err) reject(err);
-            else resolve();
-          }
-        );
-      });
+      await query(
+        `INSERT INTO licenses (
+          id, installation_id, plan, estado, fecha_expiracion,
+          modulos, limite_db_mb, created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          uuidv4(),
+          id,
+          plan,
+          estado,
+          fecha_expiracion,
+          JSON.stringify(modulos || []),
+          limite_db_mb,
+          now,
+          now
+        ]
+      );
     }
 
     // Actualizar estado en installations
-    await new Promise((resolve, reject) => {
-      db.run(
-        `UPDATE installations SET 
-          license_status = ?, license_plan = ?, license_expiry = ?, updated_at = ?
-         WHERE id = ?`,
-        [estado, plan, fecha_expiracion, now, id],
-        (err) => {
-          if (err) reject(err);
-          else resolve();
-        }
-      );
-    });
+    await query(
+      `UPDATE installations SET 
+        license_status = ?, license_plan = ?, license_expiry = ?, updated_at = ?
+       WHERE id = ?`,
+      [estado, plan, fecha_expiracion, now, id]
+    );
 
     // Crear comando para notificar al cliente
     const { v4: uuidv4 } = require('uuid');
     const commandId = uuidv4();
-    await new Promise((resolve, reject) => {
-      db.run(
-        `INSERT INTO remote_commands (
-          id, installation_id, action, params, status, created_at
-        ) VALUES (?, ?, ?, ?, ?, ?)`,
-        [
-          commandId,
-          id,
-          'actualizar_licencia',
-          JSON.stringify({ plan, estado, fecha_expiracion, modulos }),
-          'pending',
-          now
-        ],
-        (err) => {
-          if (err) reject(err);
-          else resolve();
-        }
-      );
-    });
+    await query(
+      `INSERT INTO remote_commands (
+        id, installation_id, action, params, status, created_at
+      ) VALUES (?, ?, ?, ?, ?, ?)`,
+      [
+        commandId,
+        id,
+        'actualizar_licencia',
+        JSON.stringify({ plan, estado, fecha_expiracion, modulos }),
+        'pending',
+        now
+      ]
+    );
 
     res.json({
       success: true,
@@ -263,20 +200,13 @@ router.post('/:id/license', async (req, res) => {
 
 // GET /api/v1/installations/:id/license - Obtener licencia de instalación
 router.get('/:id/license', async (req, res) => {
-  const db = getDatabase();
   const { id } = req.params;
 
   try {
-    const license = await new Promise((resolve, reject) => {
-      db.get(
-        'SELECT * FROM licenses WHERE installation_id = ?',
-        [id],
-        (err, row) => {
-          if (err) reject(err);
-          else resolve(row);
-        }
-      );
-    });
+    const license = await queryGet(
+      'SELECT * FROM licenses WHERE installation_id = ?',
+      [id]
+    );
 
     if (!license) {
       return res.status(404).json({
