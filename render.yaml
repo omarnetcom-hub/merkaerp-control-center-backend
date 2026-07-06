@@ -10,3 +10,9 @@ services:
         value: 3000
       - key: NODE_ENV
         value: production
+      - key: DATABASE_URL
+        sync: false
+    databases:
+      - name: merkaerp-postgres
+        databaseName: merkaerp
+        user: merkaerp_user

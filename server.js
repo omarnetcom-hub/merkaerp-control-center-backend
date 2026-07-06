@@ -6,26 +6,111 @@ const crypto = require('crypto');
 const path = require('path');
 const fs = require('fs');
 const sqlite3 = require('sqlite3').verbose();
+const { Pool } = require('pg');
 
 const app = express();
-const PORT = process.env.PORT || 3000;
+const PORT = process.env.PORT || 8787;
 
 // Middleware
 app.use(cors());
 app.use(bodyParser.json());
 app.use(bodyParser.urlencoded({ extended: true }));
 
-// Database path (Control Center database)
-const DB_PATH = path.join(__dirname, '..', 'Merka_Control_Center', 'Data', 'merka_control_center_v2.db');
+// Database configuration
+let db;
+let dbType = 'sqlite'; // 'sqlite' or 'postgres'
+const DATABASE_URL = process.env.DATABASE_URL;
 
-// Database connection
-const db = new sqlite3.Database(DB_PATH, (err) => {
-  if (err) {
-    console.error('Error connecting to database:', err.message);
-  } else {
-    console.log('Connected to Control Center database');
+if (DATABASE_URL) {
+  // PostgreSQL for Render
+  console.log('Using PostgreSQL database');
+  dbType = 'postgres';
+  const pool = new Pool({
+    connectionString: DATABASE_URL,
+    ssl: { rejectUnauthorized: false }
+  });
+  
+  db = {
+    query: (sql, params, callback) => {
+      pool.query(sql, params, (err, result) => {
+        if (err) {
+          callback(err);
+        } else {
+          callback(null, result.rows);
+        }
+      });
+    },
+    run: (sql, params, callback) => {
+      pool.query(sql, params, (err, result) => {
+        if (err) {
+          callback(err);
+        } else {
+          callback(null, result);
+        }
+      });
+    },
+    get: (sql, params, callback) => {
+      pool.query(sql, params, (err, result) => {
+        if (err) {
+          callback(err);
+        } else {
+          callback(null, result.rows[0]);
+        }
+      });
+    },
+    all: (sql, params, callback) => {
+      pool.query(sql, params, (err, result) => {
+        if (err) {
+          callback(err);
+        } else {
+          callback(null, result.rows);
+        }
+      });
+    }
+  };
+  
+  // Initialize PostgreSQL tables
+  initializePostgresTables(pool);
+} else {
+  // SQLite for local development
+  console.log('Using SQLite database');
+  dbType = 'sqlite';
+  
+  // Database path (Control Center database)
+  const DB_PATH = path.join(__dirname, '..', 'Merka_Control_Center', 'Data', 'merka_control_center_v2.db');
+
+  // Ensure Data directory exists
+  const DATA_DIR = path.join(__dirname, '..', 'Merka_Control_Center', 'Data');
+  if (!fs.existsSync(DATA_DIR)) {
+    fs.mkdirSync(DATA_DIR, { recursive: true });
   }
-});
+
+  // Database connection
+  db = new sqlite3.Database(DB_PATH, (err) => {
+    if (err) {
+      console.error('Error connecting to database:', err.message);
+    } else {
+      console.log('Connected to Control Center database');
+      // Create tables if they don't exist
+      db.run(`CREATE TABLE IF NOT EXISTS installations (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        installation_id TEXT UNIQUE,
+        company_name TEXT,
+        hardware_fingerprint TEXT,
+        license_status TEXT,
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP
+      )`);
+      
+      db.run(`CREATE TABLE IF NOT EXISTS sync_data (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        installation_id TEXT,
+        table_name TEXT,
+        record_data TEXT,
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP
+      )`);
+    }
+  });
+}
 
 // Secret key for JWT signing
 const JWT_SECRET = process.env.JWT_SECRET || 'merka-control-center-secret-key-2024';
@@ -49,12 +134,205 @@ function generateSignature(data, secret) {
   return crypto.createHmac('sha256', secret).update(JSON.stringify(data)).digest('hex');
 }
 
+// Initialize PostgreSQL tables
+async function initializePostgresTables(pool) {
+  try {
+    console.log('Initializing PostgreSQL tables...');
+    
+    // Create cc_clients table
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS cc_clients (
+        id SERIAL PRIMARY KEY,
+        name TEXT NOT NULL,
+        nit TEXT,
+        city TEXT,
+        country TEXT,
+        status TEXT NOT NULL,
+        plan TEXT NOT NULL,
+        contract_value REAL NOT NULL DEFAULT 0,
+        renewal_date TEXT NOT NULL,
+        usage_score INTEGER NOT NULL DEFAULT 0,
+        created_at TEXT NOT NULL,
+        reseller_id INTEGER,
+        tax_rate REAL NOT NULL DEFAULT 19.0,
+        billing_type TEXT NOT NULL DEFAULT 'mensual',
+        billing_day INTEGER NOT NULL DEFAULT 5,
+        notes TEXT,
+        contact_name TEXT,
+        contact_phone TEXT,
+        contact_email TEXT,
+        contact_role TEXT,
+        password TEXT,
+        license_type TEXT DEFAULT 'SUSCRIPCION',
+        subscription_months INTEGER DEFAULT 12,
+        postgres_schema TEXT,
+        postgres_username TEXT,
+        postgres_password TEXT
+      )
+    `);
+    
+    // Create cc_licenses table
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS cc_licenses (
+        id SERIAL PRIMARY KEY,
+        client_id INTEGER NOT NULL,
+        type TEXT NOT NULL,
+        status TEXT NOT NULL,
+        expires_at TEXT NOT NULL,
+        max_users INTEGER NOT NULL,
+        max_devices INTEGER NOT NULL,
+        max_branches INTEGER NOT NULL,
+        modules TEXT NOT NULL,
+        token_hint TEXT,
+        updated_at TEXT NOT NULL,
+        license_type TEXT NOT NULL DEFAULT 'SUSCRIPCION',
+        hardware_fingerprint TEXT,
+        offline_token TEXT,
+        activation_count INTEGER NOT NULL DEFAULT 0,
+        last_heartbeat TEXT,
+        grace_period_end TEXT,
+        FOREIGN KEY (client_id) REFERENCES cc_clients(id)
+      )
+    `);
+    
+    // Create installations table
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS installations (
+        id SERIAL PRIMARY KEY,
+        installation_id TEXT UNIQUE,
+        company_name TEXT,
+        hardware_fingerprint TEXT,
+        license_status TEXT,
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
+    
+    // Create sync_data table
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS sync_data (
+        id SERIAL PRIMARY KEY,
+        installation_id TEXT,
+        table_name TEXT,
+        record_data TEXT,
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
+    
+    console.log('PostgreSQL tables initialized successfully');
+  } catch (error) {
+    console.error('Error initializing PostgreSQL tables:', error);
+  }
+}
+
+// Create tables for client schema
+async function createClientTables(pool, schema) {
+  try {
+    console.log(`Creating tables in schema ${schema}...`);
+    
+    // Set search path to client schema
+    await pool.query(`SET search_path TO ${schema}`);
+    
+    // Create main tables for MerkaERP data
+    const tables = [
+      // Products
+      `CREATE TABLE IF NOT EXISTS ${schema}.productos (
+        id SERIAL PRIMARY KEY,
+        codigo TEXT UNIQUE NOT NULL,
+        nombre TEXT NOT NULL,
+        descripcion TEXT,
+        precio_venta REAL NOT NULL DEFAULT 0,
+        costo REAL NOT NULL DEFAULT 0,
+        categoria TEXT,
+        unidad_medida TEXT,
+        stock INTEGER NOT NULL DEFAULT 0,
+        stock_minimo INTEGER NOT NULL DEFAULT 0,
+        iva REAL NOT NULL DEFAULT 19,
+        activo BOOLEAN NOT NULL DEFAULT true,
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        sync_status TEXT DEFAULT 'synced',
+        last_sync TEXT
+      )`,
+      
+      // Customers
+      `CREATE TABLE IF NOT EXISTS ${schema}.clientes (
+        id SERIAL PRIMARY KEY,
+        identificacion TEXT UNIQUE NOT NULL,
+        nombre TEXT NOT NULL,
+        email TEXT,
+        telefono TEXT,
+        direccion TEXT,
+        ciudad TEXT,
+        tipo_cliente TEXT DEFAULT 'general',
+        limite_credito REAL NOT NULL DEFAULT 0,
+        saldo_actual REAL NOT NULL DEFAULT 0,
+        activo BOOLEAN NOT NULL DEFAULT true,
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        sync_status TEXT DEFAULT 'synced',
+        last_sync TEXT
+      )`,
+      
+      // Sales
+      `CREATE TABLE IF NOT EXISTS ${schema}.ventas (
+        id SERIAL PRIMARY KEY,
+        numero_factura TEXT UNIQUE NOT NULL,
+        cliente_id INTEGER,
+        fecha TEXT NOT NULL,
+        subtotal REAL NOT NULL DEFAULT 0,
+        iva REAL NOT NULL DEFAULT 0,
+        total REAL NOT NULL DEFAULT 0,
+        metodo_pago TEXT,
+        estado TEXT DEFAULT 'completada',
+        observaciones TEXT,
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        sync_status TEXT DEFAULT 'synced',
+        last_sync TEXT
+      )`,
+      
+      // Sale items
+      `CREATE TABLE IF NOT EXISTS ${schema}.venta_items (
+        id SERIAL PRIMARY KEY,
+        venta_id INTEGER NOT NULL,
+        producto_id INTEGER NOT NULL,
+        cantidad INTEGER NOT NULL,
+        precio_unitario REAL NOT NULL,
+        subtotal REAL NOT NULL,
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        sync_status TEXT DEFAULT 'synced',
+        last_sync TEXT
+      )`,
+      
+      // Sync tracking
+      `CREATE TABLE IF NOT EXISTS ${schema}.sync_tracking (
+        id SERIAL PRIMARY KEY,
+        table_name TEXT NOT NULL,
+        record_id INTEGER NOT NULL,
+        action TEXT NOT NULL,
+        device_id TEXT,
+        timestamp TEXT DEFAULT CURRENT_TIMESTAMP,
+        synced BOOLEAN NOT NULL DEFAULT false
+      )`
+    ];
+    
+    for (const tableSQL of tables) {
+      await pool.query(tableSQL);
+    }
+    
+    console.log(`Tables created successfully in schema ${schema}`);
+  } catch (error) {
+    console.error(`Error creating tables in schema ${schema}:`, error);
+    throw error;
+  }
+}
+
 // Health check endpoint
 app.get('/health', (req, res) => {
   res.json({ status: 'ok', timestamp: new Date().toISOString() });
 });
 
-// License activation endpoint
+// License activation endpoint (unificado con autenticación de usuarios)
 app.post('/api/v1/licenses/activate', async (req, res) => {
   try {
     const { email, password, hardware_fingerprint, license_type } = req.body;
@@ -103,6 +381,22 @@ app.post('/api/v1/licenses/activate', async (req, res) => {
               return res.status(404).json({ 
                 success: false, 
                 error: 'No license found for this client' 
+              });
+            }
+
+            // Verificar que la licencia esté activa
+            if (license.status !== 'active') {
+              return res.status(403).json({ 
+                success: false, 
+                error: 'License is not active' 
+              });
+            }
+
+            // Verificar que la licencia no haya expirado
+            if (new Date(license.expires_at) < new Date()) {
+              return res.status(403).json({ 
+                success: false, 
+                error: 'License has expired' 
               });
             }
 
@@ -161,6 +455,58 @@ app.post('/api/v1/licenses/activate', async (req, res) => {
 
                 const token = generateLicenseToken(tokenPayload);
 
+                // Generar credenciales PostgreSQL para el cliente
+                const postgresSchema = `client_${client.id}`;
+                const postgresUser = `merka_client_${client.id}`;
+                const postgresPassword = `merka_${client.id}_${Math.random().toString(36).substr(2, 10)}`;
+
+                // Función para crear esquema PostgreSQL
+                const createPostgresSchema = async () => {
+                  if (dbType === 'postgres' && DATABASE_URL) {
+                    try {
+                      const pool = new Pool({
+                        connectionString: DATABASE_URL,
+                        ssl: { rejectUnauthorized: false }
+                      });
+
+                      // Crear esquema si no existe
+                      await pool.query(`CREATE SCHEMA IF NOT EXISTS ${postgresSchema}`);
+                      
+                      // Crear usuario PostgreSQL si no existe
+                      await pool.query(`DO $$
+                        BEGIN
+                          IF NOT EXISTS (SELECT FROM pg_catalog.pg_roles WHERE rolname = '${postgresUser}') THEN
+                            CREATE USER ${postgresUser} WITH PASSWORD '${postgresPassword}';
+                          END IF;
+                        END
+                        $$`);
+
+                      // Dar permisos al usuario sobre el esquema
+                      await pool.query(`GRANT USAGE ON SCHEMA ${postgresSchema} TO ${postgresUser}`);
+                      await pool.query(`GRANT CREATE ON SCHEMA ${postgresSchema} TO ${postgresUser}`);
+                      await pool.query(`GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA ${postgresSchema} TO ${postgresUser}`);
+                      await pool.query(`ALTER DEFAULT PRIVILEGES IN SCHEMA ${postgresSchema} GRANT ALL ON TABLES TO ${postgresUser}`);
+
+                      // Crear tablas en el esquema del cliente
+                      await createClientTables(pool, postgresSchema);
+
+                      // Actualizar credenciales en la tabla cc_clients
+                      await pool.query(
+                        `UPDATE cc_clients SET postgres_schema = $1, postgres_username = $2, postgres_password = $3 WHERE id = $4`,
+                        [postgresSchema, postgresUser, postgresPassword, client.id]
+                      );
+
+                      console.log(`PostgreSQL schema ${postgresSchema} created for client ${client.id}`);
+                    } catch (error) {
+                      console.error('Error creating PostgreSQL schema:', error);
+                      // Continuar aunque falle la creación del esquema
+                    }
+                  }
+                };
+
+                // Ejecutar creación de esquema de forma asíncrona (no bloquear respuesta)
+                createPostgresSchema().catch(err => console.error('Schema creation error:', err));
+
                 res.json({
                   success: true,
                   token: token,
@@ -180,6 +526,15 @@ app.post('/api/v1/licenses/activate', async (req, res) => {
                     client_name: client.name,
                   },
                   installation_id: installationId,
+                  postgres_credentials: {
+                    host: process.env.DATABASE_URL ? 'merkaerp-control-center-backend.onrender.com' : 'localhost',
+                    port: 5432,
+                    database: 'merkaerp',
+                    schema: postgresSchema,
+                    username: postgresUser,
+                    password: postgresPassword,
+                    connection_string: process.env.DATABASE_URL || null
+                  }
                 });
               }
             );
