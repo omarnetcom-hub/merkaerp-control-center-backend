@@ -312,7 +312,7 @@ app.post('/api/v1/licenses/activate', async (req, res) => {
           console.error('Database error:', err);
           return res.status(500).json({ 
             success: false, 
-            error: 'Database error' 
+            error: 'Database error: ' + err.message 
           });
         }
 
