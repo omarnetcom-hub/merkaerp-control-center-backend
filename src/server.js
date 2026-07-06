@@ -559,6 +559,7 @@ async function createClientTables(pool, schema) {
         precio_unitario REAL NOT NULL,
         subtotal REAL NOT NULL,
         created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        updated_at TEXT DEFAULT CURRENT_TIMESTAMP,
         sync_status TEXT DEFAULT 'synced',
         last_sync TEXT
       )`,
@@ -578,6 +579,9 @@ async function createClientTables(pool, schema) {
     for (const tableSQL of tables) {
       await pool.query(tableSQL);
     }
+    
+    // Auto-migrate existing schemas that might not have updated_at on venta_items
+    await pool.query(`ALTER TABLE ${schema}.venta_items ADD COLUMN IF NOT EXISTS updated_at TEXT DEFAULT CURRENT_TIMESTAMP`);
     
     console.log(`Tables created successfully in schema ${schema}`);
   } catch (error) {
