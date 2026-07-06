@@ -432,7 +432,8 @@ async function initializePostgresTables(pool) {
         status TEXT NOT NULL DEFAULT 'pending',
         created_at TEXT NOT NULL,
         ack_at TEXT,
-        result TEXT
+        result TEXT,
+        executed_by TEXT
       )
     `);
 
