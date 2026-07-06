@@ -1129,6 +1129,114 @@ app.post('/api/v1/db/execute', validateAdminAuth, async (req, res) => {
   }
 });
 
+// ─── DATA SYNC ENDPOINTS ─────────────────────────────────────────────────────
+// Middleware to authenticate client via license token (JWT)
+const validateClientToken = (req, res, next) => {
+  const authHeader = req.headers['authorization'];
+  if (!authHeader) {
+    return res.status(401).json({ success: false, error: 'No authorization header' });
+  }
+  const token = authHeader.replace('Bearer ', '');
+  try {
+    const decoded = jwt.verify(token, process.env.LICENSE_SECRET || 'merkaerp-license-secret-key-2024');
+    req.clientId = decoded.client_id;
+    req.schema = `client_${decoded.client_id}`;
+    next();
+  } catch (err) {
+    return res.status(401).json({ success: false, error: 'Invalid or expired token' });
+  }
+};
+
+// POST /api/v1/data/push  — el cliente envía cambios locales al servidor
+// Body: { table, records: [{ id, ...fields, _updated_at }], last_push_at }
+app.post('/api/v1/data/push', validateClientToken, async (req, res) => {
+  const { table, records } = req.body;
+  const schema = req.schema;
+
+  const ALLOWED_TABLES = ['productos', 'clientes', 'ventas', 'venta_items'];
+  if (!ALLOWED_TABLES.includes(table)) {
+    return res.status(400).json({ success: false, error: `Table "${table}" is not syncable` });
+  }
+  if (!Array.isArray(records) || records.length === 0) {
+    return res.json({ success: true, pushed: 0 });
+  }
+
+  try {
+    // Ensure schema and table exist
+    await pool.query(`CREATE SCHEMA IF NOT EXISTS ${schema}`);
+    await createClientTables(pool, schema);
+
+    let pushed = 0;
+    for (const record of records) {
+      const { id, _updated_at, ...fields } = record;
+      const cols = Object.keys(fields);
+      if (cols.length === 0) continue;
+
+      // Upsert: insert or update based on id
+      const setClauses = cols.map((c, i) => `"${c}" = $${i + 2}`).join(', ');
+      const values = [id, ...Object.values(fields)];
+
+      await pool.query(
+        `INSERT INTO ${schema}.${table} (id, ${cols.map(c => `"${c}"`).join(', ')})
+         VALUES ($1, ${cols.map((_, i) => `$${i + 2}`).join(', ')})
+         ON CONFLICT (id) DO UPDATE SET ${setClauses}, updated_at = NOW()`,
+        values
+      ).catch(async () => {
+        // If id column not there (e.g., venta_items), just insert ignoring conflict
+        await pool.query(
+          `INSERT INTO ${schema}.${table} (${cols.map(c => `"${c}"`).join(', ')})
+           VALUES (${cols.map((_, i) => `$${i + 1}`).join(', ')})
+           ON CONFLICT DO NOTHING`,
+          Object.values(fields)
+        );
+      });
+      pushed++;
+    }
+
+    console.log(`[SYNC PUSH] schema=${schema} table=${table} pushed=${pushed}`);
+    res.json({ success: true, pushed });
+  } catch (error) {
+    console.error('[SYNC PUSH ERROR]', error.message);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// GET /api/v1/data/pull  — el cliente descarga cambios del servidor desde una fecha
+// Query: ?table=productos&since=2026-01-01T00:00:00Z
+app.get('/api/v1/data/pull', validateClientToken, async (req, res) => {
+  const { table, since } = req.query;
+  const schema = req.schema;
+
+  const ALLOWED_TABLES = ['productos', 'clientes', 'ventas', 'venta_items'];
+  if (!ALLOWED_TABLES.includes(table)) {
+    return res.status(400).json({ success: false, error: `Table "${table}" is not syncable` });
+  }
+
+  try {
+    // Ensure schema/tables exist (first pull after fresh install)
+    await pool.query(`CREATE SCHEMA IF NOT EXISTS ${schema}`);
+    await createClientTables(pool, schema);
+
+    let result;
+    if (since) {
+      result = await pool.query(
+        `SELECT * FROM ${schema}.${table} WHERE updated_at >= $1 ORDER BY updated_at ASC LIMIT 1000`,
+        [since]
+      );
+    } else {
+      result = await pool.query(
+        `SELECT * FROM ${schema}.${table} ORDER BY updated_at ASC LIMIT 1000`
+      );
+    }
+
+    console.log(`[SYNC PULL] schema=${schema} table=${table} since=${since} rows=${result.rows.length}`);
+    res.json({ success: true, records: result.rows, pulled_at: new Date().toISOString() });
+  } catch (error) {
+    console.error('[SYNC PULL ERROR]', error.message);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
 // Start server
 app.listen(PORT, () => {
   console.log(`Merka Control Center Backend running on port ${PORT}`);
