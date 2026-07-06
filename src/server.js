@@ -288,7 +288,16 @@ async function createClientTables(pool, schema) {
 
 // Health check endpoint
 app.get('/health', (req, res) => {
-  res.json({ status: 'ok', timestamp: new Date().toISOString() });
+  res.json({ status: 'ok', timestamp: new Date().toISOString(), version: '2.0' });
+});
+
+// Test endpoint to verify deployment
+app.get('/test-deployment', (req, res) => {
+  res.json({ 
+    message: 'Deployment test successful', 
+    timestamp: new Date().toISOString(),
+    git_commit: 'fabe4cb'
+  });
 });
 
 // License activation endpoint (unificado con autenticación de usuarios)
