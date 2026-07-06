@@ -5,7 +5,6 @@ const jwt = require('jsonwebtoken');
 const crypto = require('crypto');
 const path = require('path');
 const fs = require('fs');
-const sqlite3 = require('sqlite3').verbose();
 const { Pool } = require('pg');
 
 const app = express();
@@ -16,101 +15,61 @@ app.use(cors());
 app.use(bodyParser.json());
 app.use(bodyParser.urlencoded({ extended: true }));
 
-// Database configuration
-let db;
-let dbType = 'sqlite'; // 'sqlite' or 'postgres'
+// Database configuration - PostgreSQL only for Render
 const DATABASE_URL = process.env.DATABASE_URL;
 
-if (DATABASE_URL) {
-  // PostgreSQL for Render
-  console.log('Using PostgreSQL database');
-  dbType = 'postgres';
-  const pool = new Pool({
-    connectionString: DATABASE_URL,
-    ssl: { rejectUnauthorized: false }
-  });
-  
-  db = {
-    query: (sql, params, callback) => {
-      pool.query(sql, params, (err, result) => {
-        if (err) {
-          callback(err);
-        } else {
-          callback(null, result.rows);
-        }
-      });
-    },
-    run: (sql, params, callback) => {
-      pool.query(sql, params, (err, result) => {
-        if (err) {
-          callback(err);
-        } else {
-          callback(null, result);
-        }
-      });
-    },
-    get: (sql, params, callback) => {
-      pool.query(sql, params, (err, result) => {
-        if (err) {
-          callback(err);
-        } else {
-          callback(null, result.rows[0]);
-        }
-      });
-    },
-    all: (sql, params, callback) => {
-      pool.query(sql, params, (err, result) => {
-        if (err) {
-          callback(err);
-        } else {
-          callback(null, result.rows);
-        }
-      });
-    }
-  };
-  
-  // Initialize PostgreSQL tables
-  initializePostgresTables(pool);
-} else {
-  // SQLite for local development
-  console.log('Using SQLite database');
-  dbType = 'sqlite';
-  
-  // Database path (Control Center database)
-  const DB_PATH = path.join(__dirname, '..', 'Merka_Control_Center', 'Data', 'merka_control_center_v2.db');
-
-  // Ensure Data directory exists
-  const DATA_DIR = path.join(__dirname, '..', 'Merka_Control_Center', 'Data');
-  if (!fs.existsSync(DATA_DIR)) {
-    fs.mkdirSync(DATA_DIR, { recursive: true });
-  }
-
-  // Database connection
-  db = new sqlite3.Database(DB_PATH, (err) => {
-    if (err) {
-      console.error('Error connecting to database:', err.message);
-    } else {
-      console.log('Connected to Control Center database');
-      // Create tables if they don't exist
-      db.run(`CREATE TABLE IF NOT EXISTS installations (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        installation_id TEXT UNIQUE,
-        company_name TEXT,
-        hardware_fingerprint TEXT,
-        license_status TEXT,
-        created_at TEXT DEFAULT CURRENT_TIMESTAMP
-      )`);
-      
-      db.run(`CREATE TABLE IF NOT EXISTS sync_data (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        installation_id TEXT,
-        table_name TEXT,
-        record_data TEXT,
-        created_at TEXT DEFAULT CURRENT_TIMESTAMP
-      )`);
-    }
-  });
+if (!DATABASE_URL) {
+  console.error('DATABASE_URL environment variable is required');
+  process.exit(1);
 }
+
+console.log('Using PostgreSQL database');
+const pool = new Pool({
+  connectionString: DATABASE_URL,
+  ssl: { rejectUnauthorized: false }
+});
+
+const db = {
+  query: (sql, params, callback) => {
+    pool.query(sql, params, (err, result) => {
+      if (err) {
+        callback(err);
+      } else {
+        callback(null, result.rows);
+      }
+    });
+  },
+  run: (sql, params, callback) => {
+    pool.query(sql, params, (err, result) => {
+      if (err) {
+        callback(err);
+      } else {
+        callback(null, result);
+      }
+    });
+  },
+  get: (sql, params, callback) => {
+    pool.query(sql, params, (err, result) => {
+      if (err) {
+        callback(err);
+      } else {
+        callback(null, result.rows[0]);
+      }
+    });
+  },
+  all: (sql, params, callback) => {
+    pool.query(sql, params, (err, result) => {
+      if (err) {
+        callback(err);
+      } else {
+        callback(null, result.rows);
+      }
+    });
+  }
+};
+
+// Initialize PostgreSQL tables
+initializePostgresTables(pool);
 
 // Secret key for JWT signing
 const JWT_SECRET = process.env.JWT_SECRET || 'merka-control-center-secret-key-2024';
