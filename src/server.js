@@ -29,9 +29,16 @@ const pool = new Pool({
   ssl: { rejectUnauthorized: false }
 });
 
+function convertPlaceholders(sql) {
+  if (typeof sql !== 'string') return sql;
+  let count = 1;
+  return sql.replace(/\?/g, () => `$${count++}`);
+}
+
 const db = {
   query: (sql, params, callback) => {
-    pool.query(sql, params, (err, result) => {
+    const pgSql = convertPlaceholders(sql);
+    pool.query(pgSql, params, (err, result) => {
       if (err) {
         callback(err);
       } else {
@@ -40,7 +47,8 @@ const db = {
     });
   },
   run: (sql, params, callback) => {
-    pool.query(sql, params, (err, result) => {
+    const pgSql = convertPlaceholders(sql);
+    pool.query(pgSql, params, (err, result) => {
       if (err) {
         callback(err);
       } else {
@@ -49,7 +57,8 @@ const db = {
     });
   },
   get: (sql, params, callback) => {
-    pool.query(sql, params, (err, result) => {
+    const pgSql = convertPlaceholders(sql);
+    pool.query(pgSql, params, (err, result) => {
       if (err) {
         callback(err);
       } else {
@@ -58,7 +67,8 @@ const db = {
     });
   },
   all: (sql, params, callback) => {
-    pool.query(sql, params, (err, result) => {
+    const pgSql = convertPlaceholders(sql);
+    pool.query(pgSql, params, (err, result) => {
       if (err) {
         callback(err);
       } else {
@@ -98,6 +108,64 @@ async function initializePostgresTables(pool) {
   try {
     console.log('Initializing PostgreSQL tables...');
     
+    // Create cc_users table
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS cc_users (
+        id SERIAL PRIMARY KEY,
+        username TEXT UNIQUE NOT NULL,
+        password_hash TEXT NOT NULL,
+        email TEXT UNIQUE NOT NULL,
+        full_name TEXT NOT NULL,
+        role TEXT NOT NULL DEFAULT 'admin',
+        avatar_path TEXT,
+        created_at TEXT NOT NULL,
+        last_login TEXT,
+        is_active INTEGER NOT NULL DEFAULT 1
+      )
+    `);
+
+    // Create cc_sessions table
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS cc_sessions (
+        id SERIAL PRIMARY KEY,
+        user_id INTEGER NOT NULL,
+        token TEXT UNIQUE NOT NULL,
+        expires_at TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        FOREIGN KEY (user_id) REFERENCES cc_users (id) ON DELETE CASCADE
+      )
+    `);
+
+    // Create cc_settings table
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS cc_settings (
+        id SERIAL PRIMARY KEY,
+        user_id INTEGER NOT NULL,
+        key TEXT NOT NULL,
+        value TEXT,
+        updated_at TEXT NOT NULL,
+        FOREIGN KEY (user_id) REFERENCES cc_users (id) ON DELETE CASCADE,
+        UNIQUE(user_id, key)
+      )
+    `);
+
+    // Create cc_resellers table
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS cc_resellers (
+        id SERIAL PRIMARY KEY,
+        name TEXT NOT NULL,
+        nit TEXT,
+        contact TEXT,
+        phone TEXT,
+        email TEXT,
+        address TEXT,
+        commission_pct REAL,
+        logo_path TEXT,
+        custom_domain TEXT,
+        theme_colors_json TEXT
+      )
+    `);
+
     // Create cc_clients table
     await pool.query(`
       CREATE TABLE IF NOT EXISTS cc_clients (
@@ -121,12 +189,13 @@ async function initializePostgresTables(pool) {
         contact_phone TEXT,
         contact_email TEXT,
         contact_role TEXT,
-        password TEXT,
+        client_password TEXT,
         license_type TEXT DEFAULT 'SUSCRIPCION',
         subscription_months INTEGER DEFAULT 12,
         postgres_schema TEXT,
         postgres_username TEXT,
-        postgres_password TEXT
+        postgres_password TEXT,
+        FOREIGN KEY (reseller_id) REFERENCES cc_resellers (id) ON DELETE SET NULL
       )
     `);
     
@@ -150,22 +219,253 @@ async function initializePostgresTables(pool) {
         activation_count INTEGER NOT NULL DEFAULT 0,
         last_heartbeat TEXT,
         grace_period_end TEXT,
-        FOREIGN KEY (client_id) REFERENCES cc_clients(id)
+        FOREIGN KEY (client_id) REFERENCES cc_clients(id) ON DELETE CASCADE
       )
     `);
     
-    // Create installations table
+    // Create cc_installations table
     await pool.query(`
-      CREATE TABLE IF NOT EXISTS installations (
+      CREATE TABLE IF NOT EXISTS cc_installations (
         id SERIAL PRIMARY KEY,
-        installation_id TEXT UNIQUE,
-        company_name TEXT,
+        uuid TEXT UNIQUE NOT NULL,
+        client_id INTEGER NOT NULL DEFAULT 0,
+        version TEXT NOT NULL,
+        os TEXT NOT NULL,
+        connected INTEGER NOT NULL DEFAULT 0,
+        license_status TEXT NOT NULL,
+        sync_status TEXT NOT NULL,
+        database_status TEXT NOT NULL,
+        last_seen TEXT NOT NULL,
+        critical_errors INTEGER NOT NULL DEFAULT 0,
+        ip_address TEXT,
+        uptime_hours REAL,
         hardware_fingerprint TEXT,
-        license_status TEXT,
-        created_at TEXT DEFAULT CURRENT_TIMESTAMP
+        company_name TEXT,
+        tax_id TEXT,
+        license_plan TEXT,
+        license_expiry TEXT,
+        status TEXT,
+        created_at TEXT,
+        updated_at TEXT,
+        last_heartbeat TEXT
       )
     `);
-    
+
+    // Create cc_tickets table
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS cc_tickets (
+        id SERIAL PRIMARY KEY,
+        client_id INTEGER,
+        title TEXT NOT NULL,
+        description TEXT,
+        category TEXT NOT NULL,
+        priority TEXT NOT NULL,
+        status TEXT NOT NULL,
+        assigned_to TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        sla_hours INTEGER,
+        escalated_level INTEGER,
+        FOREIGN KEY (client_id) REFERENCES cc_clients (id) ON DELETE SET NULL
+      )
+    `);
+
+    // Create cc_releases table
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS cc_releases (
+        id SERIAL PRIMARY KEY,
+        version TEXT NOT NULL,
+        channel TEXT NOT NULL,
+        status TEXT NOT NULL,
+        pending_installs INTEGER NOT NULL DEFAULT 0,
+        published_at TEXT NOT NULL
+      )
+    `);
+
+    // Create cc_backups table
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS cc_backups (
+        id SERIAL PRIMARY KEY,
+        client_id INTEGER NOT NULL,
+        status TEXT NOT NULL,
+        size_mb REAL NOT NULL DEFAULT 0,
+        last_run TEXT NOT NULL,
+        FOREIGN KEY (client_id) REFERENCES cc_clients (id) ON DELETE CASCADE
+      )
+    `);
+
+    // Create cc_invoices table
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS cc_invoices (
+        id SERIAL PRIMARY KEY,
+        client_id INTEGER NOT NULL,
+        invoice_number TEXT NOT NULL,
+        status TEXT NOT NULL,
+        total REAL NOT NULL,
+        due_date TEXT NOT NULL,
+        paid_at TEXT,
+        items_json TEXT,
+        FOREIGN KEY (client_id) REFERENCES cc_clients (id) ON DELETE CASCADE
+      )
+    `);
+
+    // Create cc_payments table
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS cc_payments (
+        id SERIAL PRIMARY KEY,
+        invoice_id INTEGER NOT NULL,
+        amount REAL NOT NULL,
+        method TEXT NOT NULL,
+        reference TEXT NOT NULL,
+        receipt_path TEXT,
+        paid_at TEXT NOT NULL,
+        FOREIGN KEY (invoice_id) REFERENCES cc_invoices (id) ON DELETE CASCADE
+      )
+    `);
+
+    // Create cc_chat_messages table
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS cc_chat_messages (
+        id SERIAL PRIMARY KEY,
+        client_id INTEGER NOT NULL,
+        sender TEXT NOT NULL,
+        message TEXT NOT NULL,
+        attachment_path TEXT,
+        created_at TEXT NOT NULL,
+        FOREIGN KEY (client_id) REFERENCES cc_clients (id) ON DELETE CASCADE
+      )
+    `);
+
+    // Create cc_articles table
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS cc_articles (
+        id SERIAL PRIMARY KEY,
+        title TEXT NOT NULL,
+        category TEXT NOT NULL,
+        tags TEXT,
+        content TEXT,
+        author TEXT,
+        created_at TEXT NOT NULL
+      )
+    `);
+
+    // Create cc_alerts table
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS cc_alerts (
+        id SERIAL PRIMARY KEY,
+        priority TEXT NOT NULL,
+        client_id INTEGER,
+        installation_id TEXT,
+        message TEXT NOT NULL,
+        status TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        FOREIGN KEY (client_id) REFERENCES cc_clients (id) ON DELETE SET NULL
+      )
+    `);
+
+    // Create cc_campaigns table
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS cc_campaigns (
+        id SERIAL PRIMARY KEY,
+        title TEXT NOT NULL,
+        template TEXT,
+        subject TEXT,
+        target_segment TEXT,
+        scheduled_at TEXT,
+        status TEXT NOT NULL,
+        sent_count INTEGER,
+        opened_count INTEGER,
+        clicked_count INTEGER
+      )
+    `);
+
+    // Create cc_telemetry table
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS cc_telemetry (
+        id SERIAL PRIMARY KEY,
+        client_id INTEGER,
+        event TEXT NOT NULL,
+        module TEXT,
+        severity TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        FOREIGN KEY (client_id) REFERENCES cc_clients (id) ON DELETE SET NULL
+      )
+    `);
+
+    // Create cc_audit table
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS cc_audit (
+        id SERIAL PRIMARY KEY,
+        actor TEXT NOT NULL,
+        action TEXT NOT NULL,
+        entity TEXT NOT NULL,
+        detail TEXT,
+        created_at TEXT NOT NULL
+      )
+    `);
+
+    // Create cc_commands table
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS cc_commands (
+        id SERIAL PRIMARY KEY,
+        installation_uuid TEXT NOT NULL,
+        action TEXT NOT NULL,
+        priority TEXT NOT NULL DEFAULT 'info',
+        title TEXT,
+        detail TEXT,
+        status TEXT NOT NULL DEFAULT 'pending',
+        created_at TEXT NOT NULL,
+        ack_at TEXT,
+        result TEXT
+      )
+    `);
+
+    // Create cc_license_revocations table
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS cc_license_revocations (
+        id SERIAL PRIMARY KEY,
+        license_id INTEGER NOT NULL,
+        hardware_fingerprint TEXT NOT NULL,
+        reason TEXT,
+        revoked_at TEXT NOT NULL,
+        revoked_by TEXT,
+        FOREIGN KEY (license_id) REFERENCES cc_licenses (id) ON DELETE CASCADE
+      )
+    `);
+
+    // Create cc_sync_hub_log table
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS cc_sync_hub_log (
+        id SERIAL PRIMARY KEY,
+        node_uuid TEXT NOT NULL,
+        entity_type TEXT NOT NULL,
+        entity_id TEXT NOT NULL,
+        operation TEXT NOT NULL,
+        data_json TEXT NOT NULL,
+        version_timestamp TEXT NOT NULL,
+        is_critical INTEGER NOT NULL DEFAULT 0,
+        sync_status TEXT NOT NULL DEFAULT 'pending',
+        created_at TEXT NOT NULL
+      )
+    `);
+
+    // Create cc_consolidated_analytics table
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS cc_consolidated_analytics (
+        id SERIAL PRIMARY KEY,
+        report_date TEXT NOT NULL,
+        client_id INTEGER,
+        total_sales REAL NOT NULL DEFAULT 0,
+        total_transactions INTEGER NOT NULL DEFAULT 0,
+        total_tickets INTEGER NOT NULL DEFAULT 0,
+        total_critical_alerts INTEGER NOT NULL DEFAULT 0,
+        active_installations INTEGER NOT NULL DEFAULT 0,
+        avg_uptime_hours REAL NOT NULL DEFAULT 0,
+        top_products TEXT,
+        FOREIGN KEY (client_id) REFERENCES cc_clients (id) ON DELETE SET NULL
+      )
+    `);
+
     // Create sync_data table
     await pool.query(`
       CREATE TABLE IF NOT EXISTS sync_data (
@@ -399,23 +699,31 @@ app.post('/api/v1/licenses/activate', async (req, res) => {
                 // Registrar instalación
                 const installationId = `MERKA-${Date.now()}-${Math.random().toString(36).substr(2, 9).toUpperCase()}`;
                 db.run(
-                  `INSERT INTO installations (
-                    id, company_name, tax_id, version, os, license_status, 
-                    license_plan, license_expiry, status, created_at, updated_at, last_heartbeat
-                  ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                  `INSERT INTO cc_installations (
+                    uuid, client_id, version, os, connected, license_status, 
+                    sync_status, database_status, last_seen, critical_errors, hardware_fingerprint,
+                    company_name, tax_id, license_plan, license_expiry, status, created_at, updated_at, last_heartbeat
+                  ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
                   [
                     installationId,
-                    client.name,
-                    client.nit,
+                    client.id,
                     '1.0.0',
                     'Windows',
-                    'online',
-                    license.license_type || 'SUSCRIPCION',
-                    license.expires_at,
-                    'active',
-                    new Date().toISOString(),
-                    new Date().toISOString(),
-                    new Date().toISOString()
+                    1, // connected
+                    'online', // license_status
+                    'synced', // sync_status
+                    'healthy', // database_status
+                    new Date().toISOString(), // last_seen
+                    0, // critical_errors
+                    hardware_fingerprint,
+                    client.name, // company_name
+                    client.nit, // tax_id
+                    license.license_type || 'SUSCRIPCION', // license_plan
+                    license.expires_at, // license_expiry
+                    'active', // status
+                    new Date().toISOString(), // created_at
+                    new Date().toISOString(), // updated_at
+                    new Date().toISOString() // last_heartbeat
                   ],
                   (err) => {
                     if (err) {
@@ -445,7 +753,7 @@ app.post('/api/v1/licenses/activate', async (req, res) => {
 
                 // Función para crear esquema PostgreSQL
                 const createPostgresSchema = async () => {
-                  if (dbType === 'postgres' && DATABASE_URL) {
+                  if (DATABASE_URL) {
                     try {
                       const pool = new Pool({
                         connectionString: DATABASE_URL,
@@ -651,7 +959,7 @@ app.get('/api/v1/admin/stats', (req, res) => {
 // GET /api/v1/installations - Obtener todas las instalaciones
 app.get('/api/v1/installations', async (req, res) => {
   try {
-    db.all('SELECT * FROM installations ORDER BY created_at DESC', (err, rows) => {
+    db.all('SELECT * FROM cc_installations ORDER BY created_at DESC', (err, rows) => {
       if (err) {
         console.error('Error fetching installations:', err);
         return res.status(500).json({
@@ -680,7 +988,7 @@ app.get('/api/v1/installations/client/:clientId', async (req, res) => {
     const { clientId } = req.params;
     
     db.all(
-      'SELECT * FROM installations WHERE tax_id = ? ORDER BY created_at DESC',
+      'SELECT * FROM cc_installations WHERE tax_id = ? ORDER BY created_at DESC',
       [clientId],
       (err, rows) => {
         if (err) {
@@ -727,7 +1035,7 @@ app.post('/api/v1/clients', async (req, res) => {
         `INSERT INTO cc_clients (name, nit, city, country, status, plan, contract_value, renewal_date, 
          usage_score, created_at, reseller_id, tax_rate, billing_type, billing_day, notes, 
          contact_name, contact_phone, contact_email, contact_role, client_password) 
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19) 
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20) 
          RETURNING id`,
         [name, nit, city, country, status, plan, contractValue, renewalDate, usageScore, new Date().toISOString(), resellerId, taxRate, billingType, billingDay, notes, contactName, contactPhone, contactEmail, contactRole, password]
       );
@@ -780,6 +1088,45 @@ app.get('/api/v1/invoices', (req, res) => {
 
 app.get('/api/v1/leads', (req, res) => {
   res.json({ leads: [] });
+});
+
+const validateAdminAuth = (req, res, next) => {
+  const authHeader = req.headers['authorization'];
+  if (!authHeader) {
+    return res.status(401).json({ success: false, error: 'No authorization header' });
+  }
+  const token = authHeader.replace('Bearer ', '');
+  try {
+    const decoded = jwt.verify(token, JWT_SECRET);
+    req.user = decoded;
+    next();
+  } catch (error) {
+    return res.status(401).json({ success: false, error: 'Invalid or expired token' });
+  }
+};
+
+app.post('/api/v1/db/raw-query', validateAdminAuth, async (req, res) => {
+  try {
+    const { sql, arguments: args } = req.body;
+    const pgSql = convertPlaceholders(sql);
+    const result = await pool.query(pgSql, args || []);
+    res.json({ success: true, rows: result.rows });
+  } catch (error) {
+    console.error('Error running raw-query:', error, '\nSQL:', req.body.sql, '\nArgs:', req.body.arguments);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+app.post('/api/v1/db/execute', validateAdminAuth, async (req, res) => {
+  try {
+    const { sql, arguments: args } = req.body;
+    const pgSql = convertPlaceholders(sql);
+    await pool.query(pgSql, args || []);
+    res.json({ success: true });
+  } catch (error) {
+    console.error('Error executing SQL:', error, '\nSQL:', req.body.sql, '\nArgs:', req.body.arguments);
+    res.status(500).json({ success: false, error: error.message });
+  }
 });
 
 // Start server
