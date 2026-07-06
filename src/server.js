@@ -305,7 +305,7 @@ app.post('/api/v1/licenses/activate', async (req, res) => {
 
     // Buscar cliente por email y password
     db.get(
-      'SELECT * FROM cc_clients WHERE contact_email = ? AND password = ?',
+      'SELECT * FROM cc_clients WHERE contact_email = ? AND "password" = ?',
       [email, password],
       (err, client) => {
         if (err) {
