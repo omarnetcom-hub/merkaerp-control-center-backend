@@ -740,8 +740,30 @@ app.get('/api/v1/licenses', (req, res) => {
   res.json({ licenses: [] });
 });
 
-app.get('/api/v1/clients', (req, res) => {
-  res.json({ clients: [] });
+// GET /api/v1/clients - Obtener todos los clientes
+app.get('/api/v1/clients', async (req, res) => {
+  try {
+    db.all('SELECT id, name, contact_email, status FROM cc_clients', (err, rows) => {
+      if (err) {
+        console.error('Error fetching clients:', err);
+        return res.status(500).json({
+          success: false,
+          error: err.message
+        });
+      }
+
+      res.json({
+        success: true,
+        clients: rows
+      });
+    });
+  } catch (error) {
+    console.error('Error fetching clients:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
 });
 
 app.get('/api/v1/tickets', (req, res) => {
