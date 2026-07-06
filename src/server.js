@@ -300,6 +300,20 @@ app.get('/test-deployment', (req, res) => {
   });
 });
 
+// Endpoint to add password column if missing
+app.get('/fix-password-column', async (req, res) => {
+  try {
+    await pool.query(`
+      ALTER TABLE cc_clients 
+      ADD COLUMN IF NOT EXISTS "password" TEXT
+    `);
+    res.json({ success: true, message: 'Password column added or already exists' });
+  } catch (error) {
+    console.error('Error adding password column:', error);
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
 // License activation endpoint (unificado con autenticación de usuarios)
 app.post('/api/v1/licenses/activate', async (req, res) => {
   try {
