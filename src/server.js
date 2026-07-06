@@ -37,6 +37,10 @@ function convertPlaceholders(sql) {
 
 const db = {
   query: (sql, params, callback) => {
+    if (typeof params === 'function') {
+      callback = params;
+      params = [];
+    }
     const pgSql = convertPlaceholders(sql);
     pool.query(pgSql, params, (err, result) => {
       if (err) {
@@ -47,6 +51,10 @@ const db = {
     });
   },
   run: (sql, params, callback) => {
+    if (typeof params === 'function') {
+      callback = params;
+      params = [];
+    }
     const pgSql = convertPlaceholders(sql);
     pool.query(pgSql, params, (err, result) => {
       if (err) {
@@ -57,6 +65,10 @@ const db = {
     });
   },
   get: (sql, params, callback) => {
+    if (typeof params === 'function') {
+      callback = params;
+      params = [];
+    }
     const pgSql = convertPlaceholders(sql);
     pool.query(pgSql, params, (err, result) => {
       if (err) {
@@ -67,6 +79,10 @@ const db = {
     });
   },
   all: (sql, params, callback) => {
+    if (typeof params === 'function') {
+      callback = params;
+      params = [];
+    }
     const pgSql = convertPlaceholders(sql);
     pool.query(pgSql, params, (err, result) => {
       if (err) {
