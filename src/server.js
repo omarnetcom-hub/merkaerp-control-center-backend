@@ -713,36 +713,25 @@ app.post('/api/v1/clients', async (req, res) => {
 
     if (id) {
       // Actualizar cliente existente
-      db.run(
-        `UPDATE cc_clients SET name = ?, nit = ?, city = ?, country = ?, status = ?, plan = ?, 
-         contract_value = ?, renewal_date = ?, usage_score = ?, reseller_id = ?, tax_rate = ?, 
-         billing_type = ?, billing_day = ?, notes = ?, contact_name = ?, contact_phone = ?, 
-         contact_email = ?, contact_role = ?, client_password = ?, updated_at = ? WHERE id = ?`,
-        [name, nit, city, country, status, plan, contractValue, renewalDate, usageScore, resellerId, taxRate, billingType, billingDay, notes, contactName, contactPhone, contactEmail, contactRole, password, new Date().toISOString(), id],
-        (err) => {
-          if (err) {
-            console.error('Error updating client:', err);
-            return res.status(500).json({ success: false, error: err.message });
-          }
-          res.json({ success: true, message: 'Client updated' });
-        }
+      await pool.query(
+        `UPDATE cc_clients SET name = $1, nit = $2, city = $3, country = $4, status = $5, plan = $6, 
+         contract_value = $7, renewal_date = $8, usage_score = $9, reseller_id = $10, tax_rate = $11, 
+         billing_type = $12, billing_day = $13, notes = $14, contact_name = $15, contact_phone = $16, 
+         contact_email = $17, contact_role = $18, client_password = $19, updated_at = $20 WHERE id = $21`,
+        [name, nit, city, country, status, plan, contractValue, renewalDate, usageScore, resellerId, taxRate, billingType, billingDay, notes, contactName, contactPhone, contactEmail, contactRole, password, new Date().toISOString(), id]
       );
+      res.json({ success: true, message: 'Client updated' });
     } else {
       // Crear nuevo cliente
-      db.run(
+      const result = await pool.query(
         `INSERT INTO cc_clients (name, nit, city, country, status, plan, contract_value, renewal_date, 
          usage_score, created_at, reseller_id, tax_rate, billing_type, billing_day, notes, 
          contact_name, contact_phone, contact_email, contact_role, client_password) 
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        [name, nit, city, country, status, plan, contractValue, renewalDate, usageScore, createdAt || new Date().toISOString(), resellerId, taxRate, billingType, billingDay, notes, contactName, contactPhone, contactEmail, contactRole, password],
-        function(err) {
-          if (err) {
-            console.error('Error creating client:', err);
-            return res.status(500).json({ success: false, error: err.message });
-          }
-          res.json({ success: true, message: 'Client created', id: this.lastID });
-        }
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19) 
+         RETURNING id`,
+        [name, nit, city, country, status, plan, contractValue, renewalDate, usageScore, createdAt || new Date().toISOString(), resellerId, taxRate, billingType, billingDay, notes, contactName, contactPhone, contactEmail, contactRole, password]
       );
+      res.json({ success: true, message: 'Client created', id: result.rows[0].id });
     }
   } catch (error) {
     console.error('Error saving client:', error);
