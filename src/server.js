@@ -729,7 +729,7 @@ app.post('/api/v1/clients', async (req, res) => {
          contact_name, contact_phone, contact_email, contact_role, client_password) 
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19) 
          RETURNING id`,
-        [name, nit, city, country, status, plan, contractValue, renewalDate, usageScore, createdAt || new Date().toISOString(), resellerId, taxRate, billingType, billingDay, notes, contactName, contactPhone, contactEmail, contactRole, password]
+        [name, nit, city, country, status, plan, contractValue, renewalDate, usageScore, new Date().toISOString(), resellerId, taxRate, billingType, billingDay, notes, contactName, contactPhone, contactEmail, contactRole, password]
       );
       res.json({ success: true, message: 'Client created', id: result.rows[0].id });
     }
