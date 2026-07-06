@@ -693,7 +693,7 @@ app.post('/api/v1/clients', async (req, res) => {
         `UPDATE cc_clients SET name = ?, nit = ?, city = ?, country = ?, status = ?, plan = ?, 
          contract_value = ?, renewal_date = ?, usage_score = ?, reseller_id = ?, tax_rate = ?, 
          billing_type = ?, billing_day = ?, notes = ?, contact_name = ?, contact_phone = ?, 
-         contact_email = ?, contact_role = ?, password = ?, updated_at = ? WHERE id = ?`,
+         contact_email = ?, contact_role = ?, "password" = ?, updated_at = ? WHERE id = ?`,
         [name, nit, city, country, status, plan, contractValue, renewalDate, usageScore, resellerId, taxRate, billingType, billingDay, notes, contactName, contactPhone, contactEmail, contactRole, password, new Date().toISOString(), id],
         (err) => {
           if (err) {
@@ -708,7 +708,7 @@ app.post('/api/v1/clients', async (req, res) => {
       db.run(
         `INSERT INTO cc_clients (name, nit, city, country, status, plan, contract_value, renewal_date, 
          usage_score, created_at, reseller_id, tax_rate, billing_type, billing_day, notes, 
-         contact_name, contact_phone, contact_email, contact_role, password) 
+         contact_name, contact_phone, contact_email, contact_role, "password") 
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [name, nit, city, country, status, plan, contractValue, renewalDate, usageScore, createdAt || new Date().toISOString(), resellerId, taxRate, billingType, billingDay, notes, contactName, contactPhone, contactEmail, contactRole, password],
         function(err) {
