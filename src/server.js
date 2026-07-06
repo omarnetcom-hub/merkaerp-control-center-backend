@@ -479,6 +479,8 @@ async function initializePostgresTables(pool) {
         active_installations INTEGER NOT NULL DEFAULT 0,
         avg_uptime_hours REAL NOT NULL DEFAULT 0,
         top_products TEXT,
+        payment_methods TEXT,
+        generated_at TEXT,
         FOREIGN KEY (client_id) REFERENCES cc_clients (id) ON DELETE SET NULL
       )
     `);
