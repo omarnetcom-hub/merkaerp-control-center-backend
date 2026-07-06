@@ -1138,7 +1138,7 @@ const validateClientToken = (req, res, next) => {
   }
   const token = authHeader.replace('Bearer ', '');
   try {
-    const decoded = jwt.verify(token, process.env.LICENSE_SECRET || 'merkaerp-license-secret-key-2024');
+    const decoded = jwt.verify(token, JWT_SECRET);
     req.clientId = decoded.client_id;
     req.schema = `client_${decoded.client_id}`;
     next();
