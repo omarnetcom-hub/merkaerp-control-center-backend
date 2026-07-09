@@ -20,8 +20,11 @@ const ticketsRoutes = require('./routes/tickets');
 const invoicesRoutes = require('./routes/invoices');
 const leadsRoutes = require('./routes/leads');
 
+// Importar rutas Odoo
+const { setupRoutes: setupOdooRoutes } = require('./routes/odooApi');
+
 // Importar base de datos
-const { initializeDatabase } = require('./database/db');
+const { initializeDatabase, query, queryAll, queryGet } = require('./database/db');
 
 const app = express();
 const PORT = process.env.PORT || 8787;
@@ -102,11 +105,18 @@ app.use((req, res) => {
 async function startServer() {
   try {
     await initializeDatabase();
-    console.log('Base de datos inicializada correctamente');
+    console.log('✓ Base de datos inicializada correctamente');
+    
+    // Inicializar módulos Odoo 19.0
+    console.log('\n🚀 Inicializando módulos Odoo 19.0...');
+    setupOdooRoutes(app, query, queryAll, queryGet);
+    console.log('✓ Módulos Odoo inicializados\n');
     
     app.listen(PORT, () => {
-      console.log(`Servidor del Centro de Control corriendo en puerto ${PORT}`);
-      console.log(`Environment: ${process.env.NODE_ENV || 'development'}`);
+      console.log(`✓ Servidor del Centro de Control corriendo en puerto ${PORT}`);
+      console.log(`✓ Environment: ${process.env.NODE_ENV || 'development'}`);
+      console.log(`✓ API Odoo disponible en: http://localhost:${PORT}/api/odoo`);
+      console.log(`✓ Documentación en: http://localhost:${PORT}/api/odoo/docs`);
     });
   } catch (error) {
     console.error('Error al iniciar el servidor:', error);

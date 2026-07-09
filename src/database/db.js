@@ -34,7 +34,149 @@ function initializeDatabase() {
         } else {
           console.log('Conectado a SQLite:', DB_PATH);
           createTablesSQLite()
-            .then(() => resolve())
+            .then(() => {
+              // Ensure warehouses table exists in SQLite (some migrations live in SQL files)
+              const warehousesSql = `CREATE TABLE IF NOT EXISTS warehouses (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                company_id INTEGER,
+                name TEXT NOT NULL,
+                address TEXT,
+                default_location_id INTEGER,
+                created_at TEXT NOT NULL
+              )`;
+
+              const productsSql = `CREATE TABLE IF NOT EXISTS product_products (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL,
+                code TEXT,
+                category_id INTEGER,
+                type TEXT DEFAULT 'product',
+                price REAL,
+                cost REAL,
+                description TEXT,
+                uom_id INTEGER,
+                tracking TEXT DEFAULT 'none',
+                created_at TEXT NOT NULL,
+                updated_at TEXT
+              )`;
+
+              const locationsSql = `CREATE TABLE IF NOT EXISTS stock_locations (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL,
+                location_type TEXT DEFAULT 'internal',
+                active INTEGER DEFAULT 1,
+                warehouse_id INTEGER,
+                created_at TEXT NOT NULL
+              )`;
+
+              db.serialize(() => {
+                db.run(warehousesSql);
+                db.run(productsSql);
+                db.run(locationsSql);
+
+                const purchaseOrdersSql = `CREATE TABLE IF NOT EXISTS purchase_orders (
+                  id INTEGER PRIMARY KEY AUTOINCREMENT,
+                  partner_id INTEGER,
+                  company_id INTEGER,
+                  order_date TEXT,
+                  state TEXT DEFAULT 'draft',
+                  currency_id INTEGER,
+                  user_id INTEGER,
+                  total_amount REAL DEFAULT 0,
+                  created_at TEXT NOT NULL,
+                  updated_at TEXT
+                )`;
+
+                const purchaseLinesSql = `CREATE TABLE IF NOT EXISTS purchase_order_lines (
+                  id INTEGER PRIMARY KEY AUTOINCREMENT,
+                  order_id INTEGER NOT NULL,
+                  product_id INTEGER,
+                  quantity REAL NOT NULL,
+                  price_unit REAL NOT NULL,
+                  subtotal REAL DEFAULT 0,
+                  sequence INTEGER DEFAULT 0,
+                  created_at TEXT NOT NULL,
+                  updated_at TEXT
+                )`;
+
+                db.run(purchaseOrdersSql);
+                db.run(purchaseLinesSql);
+
+                // Stock tables required for integration tests
+                const stockMovesSql = `CREATE TABLE IF NOT EXISTS stock_moves (
+                  id INTEGER PRIMARY KEY AUTOINCREMENT,
+                  product_id INTEGER NOT NULL,
+                  quantity REAL NOT NULL,
+                  source_location_id INTEGER,
+                  destination_location_id INTEGER,
+                  move_type TEXT,
+                  origin TEXT,
+                  state TEXT DEFAULT 'draft',
+                  created_at TEXT NOT NULL,
+                  updated_at TEXT
+                )`;
+
+                const stockPickingsSql = `CREATE TABLE IF NOT EXISTS stock_pickings (
+                  id INTEGER PRIMARY KEY AUTOINCREMENT,
+                  company_id INTEGER,
+                  warehouse_id INTEGER,
+                  picking_type TEXT,
+                  origin TEXT,
+                  state TEXT DEFAULT 'draft',
+                  scheduled_date TEXT,
+                  created_at TEXT NOT NULL,
+                  updated_at TEXT
+                )`;
+
+                const stockPickingMovesSql = `CREATE TABLE IF NOT EXISTS stock_picking_moves (
+                  id INTEGER PRIMARY KEY AUTOINCREMENT,
+                  picking_id INTEGER NOT NULL,
+                  move_id INTEGER NOT NULL,
+                  sequence INTEGER DEFAULT 0,
+                  created_at TEXT NOT NULL
+                )`;
+
+                const stockQuantsSql = `CREATE TABLE IF NOT EXISTS stock_quants (
+                  id INTEGER PRIMARY KEY AUTOINCREMENT,
+                  company_id INTEGER,
+                  product_id INTEGER NOT NULL,
+                  location_id INTEGER NOT NULL,
+                  lot_id TEXT,
+                  quantity REAL NOT NULL DEFAULT 0,
+                  unit_cost REAL DEFAULT 0,
+                  created_at TEXT NOT NULL,
+                  updated_at TEXT
+                )`;
+
+                const stockAuditSql = `CREATE TABLE IF NOT EXISTS stock_audit (
+                  id INTEGER PRIMARY KEY AUTOINCREMENT,
+                  company_id INTEGER,
+                  branch_id INTEGER,
+                  user_id TEXT,
+                  action TEXT NOT NULL,
+                  entity_type TEXT,
+                  entity_id TEXT,
+                  payload TEXT,
+                  created_at TEXT
+                )`;
+
+                db.run(stockMovesSql);
+                db.run(stockPickingsSql);
+                db.run(stockPickingMovesSql);
+                db.run(stockQuantsSql);
+                db.run(stockAuditSql);
+
+                // Ensure SQLite compatibility columns and fields
+                db.run("ALTER TABLE stock_quants ADD COLUMN created_at TEXT", () => {
+                  db.run("ALTER TABLE purchase_orders ADD COLUMN origin TEXT", () => {
+                    db.run("ALTER TABLE purchase_order_lines ADD COLUMN purchase_id INTEGER", () => {
+                      // ignore errors if columns already exist
+                      resolve();
+                    });
+                  });
+                });
+              });
+            })
             .catch(reject);
         }
       });
@@ -791,10 +933,26 @@ function query(sql, params = []) {
     });
   } else {
     return new Promise((resolve, reject) => {
-      db.run(sql, params, function(err) {
-        if (err) reject(err);
-        else resolve({ insertId: this.lastID, rowsAffected: this.changes });
-      });
+      // Adapt SQL for SQLite: replace NOW(), strip RETURNING clauses, and convert $n params to ?
+      let execSql = sql.replace(/\bNOW\(\)/gi, "datetime('now')");
+      execSql = execSql.replace(/\sRETURNING\s[\s\S]*$/i, '');
+      execSql = execSql.replace(/\$\d+/g, '?');
+      // If it's a SELECT, use db.all to return rows
+      if (/^\s*SELECT/i.test(execSql)) {
+        db.all(execSql, params, (err, rows) => {
+          if (err) reject(err);
+          else resolve({ rows });
+        });
+      } else {
+        db.run(execSql, params, function(err) {
+          if (err) reject(err);
+          else {
+            // Provide rows array for compatibility: include id when available
+            const rows = this.lastID ? [{ id: this.lastID }] : [];
+            resolve({ insertId: this.lastID, rowsAffected: this.changes, rows });
+          }
+        });
+      }
     });
   }
 }
@@ -815,7 +973,9 @@ function queryAll(sql, params = []) {
     });
   } else {
     return new Promise((resolve, reject) => {
-      db.all(sql, params, (err, rows) => {
+      // Convert $n param markers to ? for sqlite
+      const execSql = sql.replace(/\$\d+/g, '?');
+      db.all(execSql, params, (err, rows) => {
         if (err) reject(err);
         else resolve(rows);
       });
@@ -839,7 +999,9 @@ function queryGet(sql, params = []) {
     });
   } else {
     return new Promise((resolve, reject) => {
-      db.get(sql, params, (err, row) => {
+      // Convert $n param markers to ? for sqlite
+      const execSql = sql.replace(/\$\d+/g, '?');
+      db.get(execSql, params, (err, row) => {
         if (err) reject(err);
         else resolve(row);
       });

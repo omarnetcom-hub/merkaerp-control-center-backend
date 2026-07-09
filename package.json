@@ -1,17 +1,22 @@
 {
   "name": "merkaerp-control-center",
   "version": "1.0.0",
-  "description": "Centro de Control para MerkaERP - Backend API",
+  "description": "Centro de Control para MerkaERP - Backend API con Odoo 19.0 ERP integrado",
   "main": "src/server.js",
   "scripts": {
     "start": "node src/server.js",
     "dev": "nodemon src/server.js",
-    "migrate": "node src/database/migrate.js"
+    "migrate": "node src/database/migrate.js",
+    "setup-odoo": "node setup-odoo.js",
+    "migrate-odoo": "node migrate-odoo.js",
+    "test-api": "bash test_api.sh"
   },
   "keywords": [
     "merkaerp",
     "control-center",
-    "api"
+    "api",
+    "odoo",
+    "erp"
   ],
   "author": "",
   "license": "MIT",
@@ -28,6 +33,11 @@
     "pg": "^8.22.0",
     "sqlite3": "^5.1.6",
     "uuid": "^9.0.0"
+    ,"axios": "^1.5.0",
+    "xml-crypto": "^2.0.0",
+    "node-forge": "^1.3.1",
+    "xmlbuilder2": "^3.0.2",
+    "xmldom": "^0.7.7"
   },
   "devDependencies": {
     "nodemon": "^3.0.1"

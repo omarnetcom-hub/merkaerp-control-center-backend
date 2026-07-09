@@ -1,0 +1,10 @@
+{
+  "endpoint": "https://demo.dian.gov.co/.../invoicing",
+  "credentials": {
+    "username": "REEMPLAZAR",
+    "password": "REEMPLAZAR"
+  },
+  "certPath": "path/to/certificate.p12",
+  "keyPath": "path/to/private.key",
+  "testMode": true
+}
