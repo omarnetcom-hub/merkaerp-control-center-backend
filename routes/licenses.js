@@ -1,14 +1,11 @@
 const express = require('express');
 const router = express.Router();
-const jwt = require('jsonwebtoken');
 const crypto = require('crypto');
-
-// Secret key for JWT signing
-const JWT_SECRET = process.env.JWT_SECRET || 'merka-control-center-secret-key-2024';
+const { signJwt } = require('../src/security/jwt_rs256');
 
 // Helper function to generate JWT token
 function generateLicenseToken(payload) {
-  return jwt.sign(payload, JWT_SECRET, { expiresIn: '365d' });
+  return signJwt(payload, { expiresIn: '365d' });
 }
 
 // License activation endpoint

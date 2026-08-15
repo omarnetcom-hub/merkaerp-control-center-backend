@@ -35,7 +35,8 @@ npm install
 PORT=8787
 NODE_ENV=development
 DB_PATH=./data/control_center.db
-JWT_SECRET=tu_secreto_jwt_aqui_cambiar_en_produccion
+JWT_PRIVATE_KEY_PATH=./secrets/jwt_private.pem
+JWT_PUBLIC_KEY_PATH=./secrets/jwt_public.pem
 CORS_ORIGIN=*
 ```
 
@@ -191,7 +192,9 @@ npm run dev
 
 Para producción:
 1. Cambiar `NODE_ENV=production` en `.env`
-2. Cambiar `JWT_SECRET` a un valor seguro
+2. Configurar JWT RS256 con `JWT_PRIVATE_KEY_PATH` y `JWT_PUBLIC_KEY_PATH`
+   (o `JWT_PRIVATE_KEY_PEM`/`JWT_PUBLIC_KEY_PEM`, o sus variantes Base64).
+   La clave privada nunca debe comitearse ni distribuirse al cliente.
 3. Configurar `CORS_ORIGIN` con el dominio permitido
 4. Usar un servidor de producción (PM2, Docker, etc.)
 

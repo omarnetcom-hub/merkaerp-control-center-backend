@@ -2,14 +2,11 @@ const express = require('express');
 const router = express.Router();
 const { getDatabase, queryGet, queryAll, query } = require('../database/db');
 const { authenticateToken } = require('./auth');
-const jwt = require('jsonwebtoken');
-
-// Secret key for JWT signing
-const JWT_SECRET = process.env.JWT_SECRET || 'merka-control-center-secret-key-2024';
+const { signJwt } = require('../security/jwt_rs256');
 
 // Helper function to generate JWT token
 function generateLicenseToken(payload) {
-  return jwt.sign(payload, JWT_SECRET, { expiresIn: '365d' });
+  return signJwt(payload, { expiresIn: '365d' });
 }
 
 // POST /api/v1/licenses/activate - Activar licencia (sin auth para uso de MerkaERP)

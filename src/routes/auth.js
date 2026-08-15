@@ -3,9 +3,7 @@ const router = express.Router();
 const { getDatabase } = require('../database/db');
 const { v4: uuidv4 } = require('uuid');
 const bcrypt = require('bcrypt');
-const jwt = require('jsonwebtoken');
-
-const JWT_SECRET = process.env.JWT_SECRET || 'merka-erp-secret-key-2026';
+const { signJwt, verifyJwt } = require('../security/jwt_rs256');
 
 // POST /api/v1/auth/register - Registrar nuevo usuario
 router.post('/register', async (req, res) => {
@@ -129,9 +127,8 @@ router.post('/login', async (req, res) => {
     }
 
     // Crear token JWT
-    const token = jwt.sign(
+    const token = signJwt(
       { userId: user.id, username: user.username, role: user.role },
-      JWT_SECRET,
       { expiresIn: '30d' }
     );
 
@@ -242,7 +239,7 @@ router.get('/me', async (req, res) => {
     }
 
     // Verificar token
-    const decoded = jwt.verify(token, JWT_SECRET);
+    const decoded = verifyJwt(token);
     
     // Obtener usuario
     const user = await new Promise((resolve, reject) => {
@@ -302,7 +299,7 @@ function authenticateToken(req, res, next) {
   }
 
   try {
-    const decoded = jwt.verify(token, JWT_SECRET);
+    const decoded = verifyJwt(token);
     req.user = decoded;
     next();
   } catch (error) {
