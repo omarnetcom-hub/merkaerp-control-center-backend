@@ -3,6 +3,7 @@ const router = express.Router();
 const { getDatabase } = require('../database/db');
 const { v4: uuidv4 } = require('uuid');
 const { authenticateToken } = require('./auth');
+const { isAllowedTable, normalizeTableName } = require('../sync/allowed_tables');
 
 // POST /api/v1/installations/heartbeat
 router.post('/heartbeat', authenticateToken, async (req, res) => {
@@ -203,6 +204,14 @@ router.post('/sync/push', authenticateToken, async (req, res) => {
     let processedCount = 0;
     for (const event of events) {
       const { type, table, data, operation, timestamp, eventId } = event;
+      const tableName = normalizeTableName(table);
+
+      if (!isAllowedTable(tableName)) {
+        return res.status(400).json({
+          error: 'Table not allowed for sync',
+          table
+        });
+      }
 
       // Guardar evento en la tabla de eventos de sincronización con user_id
       await new Promise((resolve, reject) => {
@@ -215,7 +224,7 @@ router.post('/sync/push', authenticateToken, async (req, res) => {
             eventId || uuidv4(),
             userId,
             installationId,
-            table,
+            tableName,
             operation,
             JSON.stringify(data),
             timestamp,
