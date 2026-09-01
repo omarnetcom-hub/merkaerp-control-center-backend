@@ -3771,7 +3771,7 @@ app.post('/api/v1/licenses/:id/offline-token', validateAdminAuth, requirePermiss
     }
     await tx.query('BEGIN');
     const result = await tx.query(
-      `SELECT l.*, c.contact_email, c.name AS client_name
+      `SELECT l.*, c.contact_email, c.name AS client_name, c.status AS client_status
        FROM cc_licenses l JOIN cc_clients c ON c.id=l.client_id
        WHERE l.id=$1 FOR UPDATE OF l`,
       [licenseId],
@@ -3780,6 +3780,11 @@ app.post('/api/v1/licenses/:id/offline-token', validateAdminAuth, requirePermiss
     if (!license) {
       await tx.query('ROLLBACK');
       return publicError(res, 404, 'License not found');
+    }
+    const clientStatus = normalizeLicenseStatus(license.client_status);
+    if (!['active','trial'].includes(clientStatus)) {
+      await tx.query('ROLLBACK');
+      return publicError(res, 409, 'Client account is not active');
     }
     const status = normalizeLicenseStatus(license.status);
     if (!['active','trial'].includes(status)) {

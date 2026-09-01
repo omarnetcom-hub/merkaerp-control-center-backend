@@ -71,3 +71,9 @@ test('offline activation revocation keeps legacy TEXT timestamps type-safe', () 
     }
   }
 });
+
+test('offline token issuance requires an active client account', () => {
+  const source = fs.readFileSync(path.join(__dirname, '../src/server.js'), 'utf8');
+  assert.match(source, /c\.status AS client_status/);
+  assert.match(source, /Client account is not active/);
+});
