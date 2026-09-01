@@ -1,18 +1,36 @@
 const crypto = require('crypto');
 
 const ALLOWED_REMOTE_ACTIONS = new Set([
+  // Core lifecycle / operations
   'forzar_respaldo',
+  'restaurar_respaldo',
   'reiniciar_sesiones',
-  'actualizar_modulos',
-  'enviar_log',
-  'mensaje_admin',
+  'reiniciar',
   'bloquear_instalacion',
   'activar_instalacion',
+  'entrar_mantenimiento',
+  'salir_mantenimiento',
+
+  // Deployment / configuration
   'forzar_actualizacion',
   'rollback_actualizacion',
-  'reiniciar',
-  'forzar_sincronizacion',
+  'aplicar_hotfix',
+  'actualizar_modulos',
   'actualizar_licencia',
+  'aplicar_configuracion',
+  'aplicar_feature_flags',
+  'forzar_sincronizacion',
+
+  // Support / diagnostics. These are intentionally enumerated; the server
+  // never exposes arbitrary shell, SQL or PowerShell execution.
+  'run_diagnostics',
+  'verificar_base_datos',
+  'reconstruir_indices',
+  'limpiar_cache',
+  'ejecutar_reparacion',
+  'enviar_log',
+  'collect_diagnostics',
+  'mensaje_admin',
   'solicitar_acceso_remoto',
 ]);
 

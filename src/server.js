@@ -25,6 +25,8 @@ const {
 } = require('./security/remote_commands');
 const { isAllowedTable: isAllowedSyncTable, isAllowedOperation: isAllowedSyncOperation } = require('./sync/allowed_tables');
 const { majorToMinor, normalizeMinor, moneyFromBody, minorToLegacyNumber } = require('./utils/money');
+const { computeHealthScore, isInRollout, errorSignature, normalizeFleetProductFamily } = require('./fleet_logic');
+const { registerFleetRoutes } = require('./fleet_routes');
 
 const app = express();
 const PORT = process.env.PORT || 8787;
@@ -118,6 +120,12 @@ function hashToken(token) {
 
 function safeJson(value) {
   return JSON.stringify(value ?? {});
+}
+
+function safeParseJson(value, fallback = null) {
+  if (value == null || value === '') return fallback;
+  if (typeof value === 'object') return value;
+  try { return JSON.parse(String(value)); } catch (_) { return fallback; }
 }
 
 function pgIdentifier(value) {
@@ -650,6 +658,333 @@ const SCHEMA_MIGRATIONS = [
     statements: [
       `ALTER TABLE cc_installations ADD COLUMN IF NOT EXISTS last_metrics_json TEXT`,
       `ALTER TABLE cc_offline_activations ADD COLUMN IF NOT EXISTS revoked_reason TEXT`,
+    ],
+  },
+  {
+    version: 10,
+    name: 'fleet_lifecycle_and_client_editions',
+    statements: [
+      `ALTER TABLE cc_clients ADD COLUMN IF NOT EXISTS product_family TEXT NOT NULL DEFAULT 'COMMERCIAL'`,
+      `ALTER TABLE cc_clients ADD COLUMN IF NOT EXISTS lifecycle_reason TEXT`,
+      `ALTER TABLE cc_clients ADD COLUMN IF NOT EXISTS archived_at TIMESTAMPTZ`,
+      `ALTER TABLE cc_clients ADD COLUMN IF NOT EXISTS support_policy_json TEXT NOT NULL DEFAULT '{}'`,
+      `UPDATE cc_clients c SET product_family = COALESCE((SELECT l.product_family FROM cc_licenses l WHERE l.client_id=c.id ORDER BY l.id DESC LIMIT 1), product_family, 'COMMERCIAL')`,
+      `ALTER TABLE cc_licenses ADD COLUMN IF NOT EXISTS status_reason TEXT`,
+      `ALTER TABLE cc_licenses ADD COLUMN IF NOT EXISTS suspended_at TIMESTAMPTZ`,
+      `ALTER TABLE cc_licenses ADD COLUMN IF NOT EXISTS revoked_at TIMESTAMPTZ`,
+      `ALTER TABLE cc_licenses ADD COLUMN IF NOT EXISTS reactivated_at TIMESTAMPTZ`,
+      `ALTER TABLE cc_installations ADD COLUMN IF NOT EXISTS health_score INTEGER NOT NULL DEFAULT 100`,
+      `ALTER TABLE cc_installations ADD COLUMN IF NOT EXISTS maintenance_mode INTEGER NOT NULL DEFAULT 0`,
+      `ALTER TABLE cc_installations ADD COLUMN IF NOT EXISTS update_channel TEXT NOT NULL DEFAULT 'stable'`,
+      `ALTER TABLE cc_installations ADD COLUMN IF NOT EXISTS policy_json TEXT NOT NULL DEFAULT '{}'`,
+      `ALTER TABLE cc_installations ADD COLUMN IF NOT EXISTS capabilities_json TEXT NOT NULL DEFAULT '[]'`,
+      `ALTER TABLE cc_installations ADD COLUMN IF NOT EXISTS agent_version TEXT`,
+      `ALTER TABLE cc_installations ADD COLUMN IF NOT EXISTS last_backup_at TIMESTAMPTZ`,
+      `ALTER TABLE cc_installations ADD COLUMN IF NOT EXISTS last_diagnostic_at TIMESTAMPTZ`,
+      `ALTER TABLE cc_installations ADD COLUMN IF NOT EXISTS architecture TEXT`,
+      `ALTER TABLE cc_installations ADD COLUMN IF NOT EXISTS free_disk_mb BIGINT`,
+      `ALTER TABLE cc_installations ADD COLUMN IF NOT EXISTS memory_mb BIGINT`,
+      `ALTER TABLE cc_installations ADD COLUMN IF NOT EXISTS last_error_signature TEXT`,
+      `CREATE INDEX IF NOT EXISTS idx_cc_clients_family_status ON cc_clients(product_family,status)`,
+      `CREATE INDEX IF NOT EXISTS idx_cc_installations_health ON cc_installations(health_score,last_seen)`,
+    ],
+  },
+  {
+    version: 11,
+    name: 'fleet_operations_support_and_policy',
+    statements: [
+      `CREATE TABLE IF NOT EXISTS cc_health_checks (
+        id BIGSERIAL PRIMARY KEY, installation_uuid TEXT NOT NULL, health_score INTEGER NOT NULL,
+        health_status TEXT NOT NULL, summary_json TEXT NOT NULL DEFAULT '{}', created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      )`,
+      `CREATE INDEX IF NOT EXISTS idx_cc_health_checks_installation_created ON cc_health_checks(installation_uuid,created_at DESC)`,
+      `CREATE TABLE IF NOT EXISTS cc_diagnostic_runs (
+        id BIGSERIAL PRIMARY KEY, installation_uuid TEXT NOT NULL, command_id BIGINT, requested_by TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'pending', checks_json TEXT NOT NULL DEFAULT '[]', result_json TEXT,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), completed_at TIMESTAMPTZ
+      )`,
+      `CREATE INDEX IF NOT EXISTS idx_cc_diagnostics_installation_created ON cc_diagnostic_runs(installation_uuid,created_at DESC)`,
+      `CREATE TABLE IF NOT EXISTS cc_repair_catalog (
+        code TEXT PRIMARY KEY, title TEXT NOT NULL, description TEXT NOT NULL, product_family TEXT NOT NULL DEFAULT 'ALL',
+        min_version TEXT, max_version TEXT, risk_level TEXT NOT NULL DEFAULT 'low', command_action TEXT NOT NULL DEFAULT 'ejecutar_reparacion',
+        default_params_json TEXT NOT NULL DEFAULT '{}', enabled INTEGER NOT NULL DEFAULT 1, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      )`,
+      `CREATE TABLE IF NOT EXISTS cc_repair_runs (
+        id BIGSERIAL PRIMARY KEY, installation_uuid TEXT NOT NULL, repair_code TEXT NOT NULL, command_id BIGINT,
+        status TEXT NOT NULL DEFAULT 'pending', requested_by TEXT NOT NULL, result_json TEXT,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), completed_at TIMESTAMPTZ
+      )`,
+      `CREATE TABLE IF NOT EXISTS cc_feature_flags (
+        flag_key TEXT PRIMARY KEY, description TEXT NOT NULL, default_enabled INTEGER NOT NULL DEFAULT 0,
+        product_family TEXT NOT NULL DEFAULT 'ALL', min_version TEXT, max_version TEXT, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      )`,
+      `CREATE TABLE IF NOT EXISTS cc_feature_flag_overrides (
+        id BIGSERIAL PRIMARY KEY, flag_key TEXT NOT NULL REFERENCES cc_feature_flags(flag_key) ON DELETE CASCADE,
+        scope_type TEXT NOT NULL, scope_id TEXT NOT NULL, enabled INTEGER NOT NULL, updated_by TEXT, updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        UNIQUE(flag_key,scope_type,scope_id)
+      )`,
+      `CREATE TABLE IF NOT EXISTS cc_remote_configs (
+        id BIGSERIAL PRIMARY KEY, scope_type TEXT NOT NULL, scope_id TEXT NOT NULL, config_json TEXT NOT NULL DEFAULT '{}',
+        version INTEGER NOT NULL DEFAULT 1, active INTEGER NOT NULL DEFAULT 1, updated_by TEXT, updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        UNIQUE(scope_type,scope_id)
+      )`,
+      `CREATE TABLE IF NOT EXISTS cc_messages (
+        id BIGSERIAL PRIMARY KEY, scope_type TEXT NOT NULL, scope_id TEXT NOT NULL, title TEXT NOT NULL, body TEXT NOT NULL,
+        severity TEXT NOT NULL DEFAULT 'info', status TEXT NOT NULL DEFAULT 'queued', created_by TEXT NOT NULL,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), expires_at TIMESTAMPTZ
+      )`,
+      `CREATE TABLE IF NOT EXISTS cc_service_status (
+        service_name TEXT PRIMARY KEY, status TEXT NOT NULL, message TEXT, updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      )`,
+      `INSERT INTO cc_service_status(service_name,status,message) VALUES
+        ('api','operational','API administrativa y de agentes'),
+        ('licensing','operational','Validación y emisión de licencias'),
+        ('updates','operational','Manifiestos y artefactos de actualización'),
+        ('sync','operational','Sincronización de agentes'),
+        ('support','operational','Diagnóstico, logs y soporte remoto')
+       ON CONFLICT(service_name) DO NOTHING`,
+      `INSERT INTO cc_repair_catalog(code,title,description,risk_level,command_action,default_params_json) VALUES
+        ('DB-INTEGRITY','Verificar integridad de base de datos','Ejecuta verificaciones seguras de integridad sin modificar datos','low','verificar_base_datos','{}'),
+        ('REBUILD-INDEXES','Reconstruir indices','Reconstruye indices administrados por MerkaERP y valida el resultado','medium','reconstruir_indices','{}'),
+        ('CLEAR-CACHE','Limpiar cache seguro','Limpia caches regenerables de MerkaERP sin tocar datos del negocio','low','limpiar_cache','{}'),
+        ('SYNC-RECOVERY','Recuperar sincronizacion','Reinicia el motor de sincronizacion y procesa la cola pendiente','medium','forzar_sincronizacion','{}')
+       ON CONFLICT (code) DO NOTHING`,
+    ],
+  },
+  {
+    version: 12,
+    name: 'deployment_backup_and_release_management',
+    statements: [
+      `ALTER TABLE cc_releases ADD COLUMN IF NOT EXISTS product_family TEXT NOT NULL DEFAULT 'ALL'`,
+      `ALTER TABLE cc_releases ADD COLUMN IF NOT EXISTS release_type TEXT NOT NULL DEFAULT 'release'`,
+      `ALTER TABLE cc_releases ADD COLUMN IF NOT EXISTS rollback_version TEXT`,
+      `ALTER TABLE cc_releases ADD COLUMN IF NOT EXISTS min_client_version TEXT`,
+      `ALTER TABLE cc_releases ADD COLUMN IF NOT EXISTS min_free_mb BIGINT NOT NULL DEFAULT 500`,
+      `ALTER TABLE cc_releases ADD COLUMN IF NOT EXISTS rollout_pct INTEGER NOT NULL DEFAULT 100`,
+      `ALTER TABLE cc_releases ADD COLUMN IF NOT EXISTS artifact_path TEXT`,
+      `ALTER TABLE cc_releases ADD COLUMN IF NOT EXISTS artifact_name TEXT`,
+      `ALTER TABLE cc_releases ADD COLUMN IF NOT EXISTS artifact_uploaded_at TIMESTAMPTZ`,
+      `CREATE TABLE IF NOT EXISTS cc_deployments (
+        id BIGSERIAL PRIMARY KEY, release_id INTEGER NOT NULL REFERENCES cc_releases(id) ON DELETE CASCADE, name TEXT NOT NULL,
+        scope_type TEXT NOT NULL DEFAULT 'all', scope_id TEXT, product_family TEXT NOT NULL DEFAULT 'ALL', strategy TEXT NOT NULL DEFAULT 'manual',
+        status TEXT NOT NULL DEFAULT 'draft', target_count INTEGER NOT NULL DEFAULT 0, success_count INTEGER NOT NULL DEFAULT 0,
+        failed_count INTEGER NOT NULL DEFAULT 0, created_by TEXT NOT NULL, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        started_at TIMESTAMPTZ, completed_at TIMESTAMPTZ, paused_at TIMESTAMPTZ
+      )`,
+      `CREATE TABLE IF NOT EXISTS cc_deployment_targets (
+        id BIGSERIAL PRIMARY KEY, deployment_id BIGINT NOT NULL REFERENCES cc_deployments(id) ON DELETE CASCADE, installation_uuid TEXT NOT NULL,
+        command_id BIGINT, status TEXT NOT NULL DEFAULT 'pending', last_error TEXT, updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        UNIQUE(deployment_id,installation_uuid)
+      )`,
+      `ALTER TABLE cc_backups ADD COLUMN IF NOT EXISTS installation_uuid TEXT`,
+      `ALTER TABLE cc_backups ADD COLUMN IF NOT EXISTS backup_ref TEXT`,
+      `ALTER TABLE cc_backups ADD COLUMN IF NOT EXISTS checksum TEXT`,
+      `ALTER TABLE cc_backups ADD COLUMN IF NOT EXISTS requested_by TEXT`,
+      `ALTER TABLE cc_backups ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()`,
+      `ALTER TABLE cc_backups ADD COLUMN IF NOT EXISTS completed_at TIMESTAMPTZ`,
+      `ALTER TABLE cc_backups ADD COLUMN IF NOT EXISTS retention_until TIMESTAMPTZ`,
+      `CREATE TABLE IF NOT EXISTS cc_restore_jobs (
+        id BIGSERIAL PRIMARY KEY, installation_uuid TEXT NOT NULL, backup_id INTEGER REFERENCES cc_backups(id) ON DELETE SET NULL,
+        command_id BIGINT, status TEXT NOT NULL DEFAULT 'pending', requested_by TEXT NOT NULL, reason TEXT,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), completed_at TIMESTAMPTZ, result_json TEXT
+      )`,
+      `CREATE INDEX IF NOT EXISTS idx_cc_deployments_status_created ON cc_deployments(status,created_at DESC)`,
+    ],
+  },
+  {
+    version: 13,
+    name: 'organizations_subscriptions_and_error_intelligence',
+    statements: [
+      `CREATE TABLE IF NOT EXISTS cc_organizations (
+        id BIGSERIAL PRIMARY KEY, client_id INTEGER NOT NULL REFERENCES cc_clients(id) ON DELETE CASCADE, name TEXT NOT NULL,
+        code TEXT, status TEXT NOT NULL DEFAULT 'active', created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      )`,
+      `CREATE TABLE IF NOT EXISTS cc_branches (
+        id BIGSERIAL PRIMARY KEY, organization_id BIGINT NOT NULL REFERENCES cc_organizations(id) ON DELETE CASCADE, name TEXT NOT NULL,
+        code TEXT, city TEXT, status TEXT NOT NULL DEFAULT 'active', created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      )`,
+      `ALTER TABLE cc_installations ADD COLUMN IF NOT EXISTS organization_id BIGINT`,
+      `ALTER TABLE cc_installations ADD COLUMN IF NOT EXISTS branch_id BIGINT`,
+      `CREATE TABLE IF NOT EXISTS cc_plans (
+        plan_key TEXT PRIMARY KEY, name TEXT NOT NULL, product_family TEXT NOT NULL DEFAULT 'COMMERCIAL', billing_period TEXT NOT NULL DEFAULT 'monthly',
+        price_minor BIGINT NOT NULL DEFAULT 0, limits_json TEXT NOT NULL DEFAULT '{}', modules_json TEXT NOT NULL DEFAULT '[]', active INTEGER NOT NULL DEFAULT 1,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      )`,
+      `CREATE TABLE IF NOT EXISTS cc_client_subscriptions (
+        id BIGSERIAL PRIMARY KEY, client_id INTEGER NOT NULL REFERENCES cc_clients(id) ON DELETE CASCADE, plan_key TEXT REFERENCES cc_plans(plan_key) ON DELETE SET NULL,
+        status TEXT NOT NULL DEFAULT 'active', started_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), current_period_end TIMESTAMPTZ,
+        cancel_at_period_end INTEGER NOT NULL DEFAULT 0, metadata_json TEXT NOT NULL DEFAULT '{}', UNIQUE(client_id)
+      )`,
+      `CREATE TABLE IF NOT EXISTS cc_error_groups (
+        signature TEXT PRIMARY KEY, title TEXT NOT NULL, module TEXT, first_seen TIMESTAMPTZ NOT NULL DEFAULT NOW(), last_seen TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        occurrences BIGINT NOT NULL DEFAULT 1, affected_installations INTEGER NOT NULL DEFAULT 1, last_version TEXT, severity TEXT NOT NULL DEFAULT 'error', sample_message TEXT
+      )`,
+      `CREATE TABLE IF NOT EXISTS cc_error_occurrences (
+        id BIGSERIAL PRIMARY KEY, signature TEXT NOT NULL REFERENCES cc_error_groups(signature) ON DELETE CASCADE, installation_uuid TEXT NOT NULL,
+        client_id INTEGER, version TEXT, message TEXT, context_json TEXT NOT NULL DEFAULT '{}', created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      )`,
+      `CREATE INDEX IF NOT EXISTS idx_cc_error_occurrences_signature_created ON cc_error_occurrences(signature,created_at DESC)`,
+      `INSERT INTO cc_plans(plan_key,name,product_family,billing_period,price_minor,limits_json,modules_json) VALUES
+        ('COMMERCIAL_BASIC','Comercial Básica','COMMERCIAL','monthly',0,'{\"users\":1,\"devices\":1,\"branches\":1}','[\"sales\",\"purchases\",\"inventory\",\"cash\",\"accounting\",\"reports\"]'),
+        ('COMMERCIAL_PRO','Comercial Profesional','COMMERCIAL','monthly',0,'{\"users\":8,\"devices\":12,\"branches\":2}','[\"sales\",\"purchases\",\"inventory\",\"cash\",\"accounting\",\"reports\",\"crm\",\"hrm\",\"payroll\"]'),
+        ('PUBLIC_STANDARD','Público Estándar','PUBLIC','annual',0,'{\"users\":30,\"devices\":50,\"branches\":10}','[\"presupuesto_publico\",\"contabilidad_nicsp\",\"contratacion_publica\",\"nomina_publica\",\"sgdea_publico\",\"transparencia\",\"regalias\",\"sgp\",\"siif\",\"salud_publica\"]')
+       ON CONFLICT (plan_key) DO NOTHING`,
+    ],
+
+  },
+  {
+    version: 14,
+    name: 'deployment_safety_and_rollback',
+    statements: [
+      `ALTER TABLE cc_deployments ADD COLUMN IF NOT EXISTS batch_pct INTEGER NOT NULL DEFAULT 10`,
+      `ALTER TABLE cc_deployments ADD COLUMN IF NOT EXISTS error_threshold_pct INTEGER NOT NULL DEFAULT 20`,
+      `ALTER TABLE cc_deployments ADD COLUMN IF NOT EXISTS rollback_of BIGINT REFERENCES cc_deployments(id) ON DELETE SET NULL`,
+      `ALTER TABLE cc_deployment_targets ADD COLUMN IF NOT EXISTS previous_version TEXT`,
+      `CREATE INDEX IF NOT EXISTS idx_cc_deployment_targets_command ON cc_deployment_targets(command_id)`,
+    ],
+  },
+  {
+    version: 15,
+    name: 'operational_alerts_logs_scheduling_and_compatibility',
+    statements: [
+      `ALTER TABLE cc_alerts ADD COLUMN IF NOT EXISTS alert_key TEXT`,
+      `ALTER TABLE cc_alerts ADD COLUMN IF NOT EXISTS category TEXT NOT NULL DEFAULT 'general'`,
+      `ALTER TABLE cc_alerts ADD COLUMN IF NOT EXISTS details_json TEXT NOT NULL DEFAULT '{}'`,
+      `ALTER TABLE cc_alerts ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()`,
+      `ALTER TABLE cc_alerts ADD COLUMN IF NOT EXISTS resolved_at TIMESTAMPTZ`,
+      `CREATE INDEX IF NOT EXISTS idx_cc_alerts_key_status ON cc_alerts(alert_key,status)`,
+      `CREATE INDEX IF NOT EXISTS idx_cc_alerts_installation_status ON cc_alerts(installation_id,status)`,
+      `ALTER TABLE cc_installations ADD COLUMN IF NOT EXISTS db_schema_version TEXT`,
+      `ALTER TABLE cc_installations ADD COLUMN IF NOT EXISTS app_build_number TEXT`,
+      `ALTER TABLE cc_releases ADD COLUMN IF NOT EXISTS supported_os_json TEXT NOT NULL DEFAULT '[]'`,
+      `ALTER TABLE cc_releases ADD COLUMN IF NOT EXISTS supported_arch_json TEXT NOT NULL DEFAULT '[]'`,
+      `ALTER TABLE cc_deployments ADD COLUMN IF NOT EXISTS scheduled_at TIMESTAMPTZ`,
+      `ALTER TABLE cc_deployments ADD COLUMN IF NOT EXISTS auto_rollback INTEGER NOT NULL DEFAULT 0`,
+      `ALTER TABLE cc_deployments ADD COLUMN IF NOT EXISTS rollback_deployment_id BIGINT REFERENCES cc_deployments(id) ON DELETE SET NULL`,
+      `ALTER TABLE cc_deployment_targets ADD COLUMN IF NOT EXISTS attempt_count INTEGER NOT NULL DEFAULT 0`,
+      `ALTER TABLE cc_deployment_targets ADD COLUMN IF NOT EXISTS last_attempt_at TIMESTAMPTZ`,
+      `CREATE TABLE IF NOT EXISTS cc_agent_artifact_requests (
+        id BIGSERIAL PRIMARY KEY, installation_uuid TEXT NOT NULL, artifact_type TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'pending',
+        command_id BIGINT, requested_by TEXT NOT NULL, params_json TEXT NOT NULL DEFAULT '{}', created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        completed_at TIMESTAMPTZ, expires_at TIMESTAMPTZ NOT NULL DEFAULT (NOW() + INTERVAL '1 hour')
+      )`,
+      `CREATE TABLE IF NOT EXISTS cc_agent_artifacts (
+        id BIGSERIAL PRIMARY KEY, request_id BIGINT REFERENCES cc_agent_artifact_requests(id) ON DELETE SET NULL,
+        installation_uuid TEXT NOT NULL, artifact_type TEXT NOT NULL, name TEXT, mime_type TEXT NOT NULL DEFAULT 'text/plain',
+        content_text TEXT, metadata_json TEXT NOT NULL DEFAULT '{}', sha256 TEXT, size_bytes BIGINT NOT NULL DEFAULT 0,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      )`,
+      `CREATE INDEX IF NOT EXISTS idx_cc_agent_artifacts_installation_created ON cc_agent_artifacts(installation_uuid,created_at DESC)`,
+      `CREATE INDEX IF NOT EXISTS idx_cc_artifact_requests_installation_created ON cc_agent_artifact_requests(installation_uuid,created_at DESC)`,
+    ],
+  },
+  {
+    version: 16,
+    name: 'client_activity_and_operational_history',
+    statements: [
+      `CREATE TABLE IF NOT EXISTS cc_client_activity (
+        id BIGSERIAL PRIMARY KEY,
+        client_id INTEGER NOT NULL REFERENCES cc_clients(id) ON DELETE CASCADE,
+        activity_type TEXT NOT NULL DEFAULT 'note',
+        title TEXT,
+        content TEXT NOT NULL,
+        direction TEXT,
+        channel TEXT,
+        metadata_json TEXT NOT NULL DEFAULT '{}',
+        created_by TEXT,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      )`,
+      `CREATE INDEX IF NOT EXISTS idx_cc_client_activity_client_created ON cc_client_activity(client_id,created_at DESC)`,
+      `CREATE INDEX IF NOT EXISTS idx_cc_client_activity_type ON cc_client_activity(activity_type,created_at DESC)`,
+    ],
+  },
+  {
+    version: 17,
+    name: 'license_lifecycle_provenance',
+    statements: [
+      `ALTER TABLE cc_licenses ADD COLUMN IF NOT EXISTS suspension_source TEXT`,
+      `UPDATE cc_licenses SET suspension_source='legacy'
+       WHERE status='suspended' AND suspension_source IS NULL`,
+      `CREATE INDEX IF NOT EXISTS idx_cc_licenses_client_suspension_source
+       ON cc_licenses(client_id,status,suspension_source)`,
+    ],
+  },
+  {
+    version: 18,
+    name: 'canonical_commercial_and_public_plan_catalog',
+    statements: [
+      `ALTER TABLE cc_plans ADD COLUMN IF NOT EXISTS currency TEXT NOT NULL DEFAULT 'COP'`,
+      `ALTER TABLE cc_plans ADD COLUMN IF NOT EXISTS tax_included INTEGER NOT NULL DEFAULT 0`,
+      `ALTER TABLE cc_plans ADD COLUMN IF NOT EXISTS description TEXT`,
+      `INSERT INTO cc_plans
+        (plan_key,name,product_family,billing_period,price_minor,limits_json,modules_json,active,currency,tax_included,description)
+       VALUES
+        ('COMMERCIAL_TRIAL','Comercial Prueba','COMMERCIAL','trial',0,'{"users":1,"devices":1,"branches":1}','["sales","purchases","inventory","cash"]',1,'COP',0,'Prueba comercial de 30 días'),
+        ('COMMERCIAL_ENTERPRISE','Comercial Empresarial','COMMERCIAL','monthly',35900000,'{"users":30,"devices":50,"branches":10}','["sales","purchases","inventory","cash","accounting","reports","crm","hrm","payroll","production"]',1,'COP',0,'Operación comercial multiusuario y multisede'),
+        ('PUBLIC_TRIAL','Público Prueba','PUBLIC','trial',0,'{"users":1,"devices":1,"branches":1}','["presupuesto_publico","contabilidad_nicsp"]',1,'COP',0,'Prueba de edición pública por 30 días'),
+        ('PUBLIC_PRO','Público Profesional','PUBLIC','annual',0,'{"users":60,"devices":100,"branches":20}','["presupuesto_publico","contabilidad_nicsp","contratacion_publica","nomina_publica","sgdea_publico","transparencia","regalias","sgp","siif","salud_publica"]',0,'COP',0,'Precio pendiente de aprobación comercial'),
+        ('PUBLIC_INSTITUTIONAL','Público Institucional','PUBLIC','annual',0,'{"users":150,"devices":250,"branches":50}','["presupuesto_publico","contabilidad_nicsp","contratacion_publica","nomina_publica","sgdea_publico","transparencia","regalias","sgp","siif","salud_publica"]',0,'COP',0,'Precio pendiente de aprobación comercial')
+       ON CONFLICT(plan_key) DO NOTHING`,
+      `UPDATE cc_plans SET price_minor=5900000,currency='COP',description=COALESCE(description,'Plan comercial básico')
+       WHERE plan_key='COMMERCIAL_BASIC' AND price_minor=0`,
+      `UPDATE cc_plans SET price_minor=18900000,currency='COP',description=COALESCE(description,'Plan comercial profesional')
+       WHERE plan_key='COMMERCIAL_PRO' AND price_minor=0`,
+      `UPDATE cc_plans SET active=0,description=COALESCE(description,'Precio pendiente de aprobación comercial')
+       WHERE product_family='PUBLIC' AND billing_period<>'trial' AND price_minor=0`,
+    ],
+  },
+  {
+    version: 19,
+    name: 'bind_licenses_to_canonical_plans',
+    statements: [
+      `ALTER TABLE cc_licenses ADD COLUMN IF NOT EXISTS plan_key TEXT`,
+      `UPDATE cc_licenses SET plan_key=CASE
+         WHEN product_family='PUBLIC' AND LOWER(type) LIKE '%trial%' THEN 'PUBLIC_TRIAL'
+         WHEN product_family='PUBLIC' AND LOWER(type) LIKE '%prof%' THEN 'PUBLIC_PRO'
+         WHEN product_family='PUBLIC' AND (LOWER(type) LIKE '%instit%' OR LOWER(type) LIKE '%empresa%') THEN 'PUBLIC_INSTITUTIONAL'
+         WHEN product_family='PUBLIC' THEN 'PUBLIC_STANDARD'
+         WHEN LOWER(type) LIKE '%trial%' THEN 'COMMERCIAL_TRIAL'
+         WHEN LOWER(type) LIKE '%prof%' THEN 'COMMERCIAL_PRO'
+         WHEN LOWER(type) LIKE '%empresa%' THEN 'COMMERCIAL_ENTERPRISE'
+         ELSE 'COMMERCIAL_BASIC' END
+       WHERE plan_key IS NULL`,
+      `DO $$ BEGIN
+         IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname='cc_licenses_plan_key_fkey') THEN
+           ALTER TABLE cc_licenses ADD CONSTRAINT cc_licenses_plan_key_fkey
+             FOREIGN KEY(plan_key) REFERENCES cc_plans(plan_key) ON DELETE SET NULL;
+         END IF;
+       END $$`,
+      `CREATE INDEX IF NOT EXISTS idx_cc_licenses_plan_key ON cc_licenses(plan_key)`,
+    ],
+  },
+  {
+    version: 20,
+    name: 'final_public_plan_pricing_and_catalog_copy',
+    statements: [
+      `UPDATE cc_plans SET name='Prueba Comercial',price_minor=0,billing_period='trial',active=1,
+         currency='COP',tax_included=0,description='Prueba comercial de 30 días',updated_at=NOW()
+       WHERE plan_key='COMMERCIAL_TRIAL'`,
+      `UPDATE cc_plans SET name='Comercial Básica',price_minor=5900000,billing_period='monthly',active=1,
+         currency='COP',tax_included=0,description='Operación esencial para una empresa o sede',updated_at=NOW()
+       WHERE plan_key='COMMERCIAL_BASIC'`,
+      `UPDATE cc_plans SET name='Comercial Profesional',price_minor=18900000,billing_period='monthly',active=1,
+         currency='COP',tax_included=0,description='Gestión integral para equipos en crecimiento',updated_at=NOW()
+       WHERE plan_key='COMMERCIAL_PRO'`,
+      `UPDATE cc_plans SET name='Comercial Empresarial',price_minor=35900000,billing_period='monthly',active=1,
+         currency='COP',tax_included=0,description='Operación comercial multiusuario y multisede',updated_at=NOW()
+       WHERE plan_key='COMMERCIAL_ENTERPRISE'`,
+      `UPDATE cc_plans SET name='Prueba Pública',price_minor=0,billing_period='trial',active=1,
+         currency='COP',tax_included=0,description='Prueba de la edición pública por 30 días',updated_at=NOW()
+       WHERE plan_key='PUBLIC_TRIAL'`,
+      `UPDATE cc_plans SET name='Público Estándar',price_minor=480000000,billing_period='annual',active=1,
+         currency='COP',tax_included=0,description='Plan anual para entidades pequeñas: COP 4.800.000 antes de IVA',updated_at=NOW()
+       WHERE plan_key='PUBLIC_STANDARD'`,
+      `UPDATE cc_plans SET name='Público Profesional',price_minor=960000000,billing_period='annual',active=1,
+         currency='COP',tax_included=0,description='Plan anual para entidades medianas: COP 9.600.000 antes de IVA',updated_at=NOW()
+       WHERE plan_key='PUBLIC_PRO'`,
+      `UPDATE cc_plans SET name='Público Institucional',price_minor=1800000000,billing_period='annual',active=1,
+         currency='COP',tax_included=0,description='Plan anual multisede: COP 18.000.000 antes de IVA',updated_at=NOW()
+       WHERE plan_key='PUBLIC_INSTITUTIONAL'`,
     ],
   },
 ];
@@ -1367,15 +1702,33 @@ async function provisionClientDatabase(clientId) {
   };
 }
 
-// Health check endpoint
-const healthHandler = (req, res) => {
-  res.json({
-    status: 'ok',
-    timestamp: new Date().toISOString(),
-    version: '1.2.1',
-    merkaerp_compatibility: '1.2.1+5',
-    publisher_key_fingerprint: CLIENT_PINNED_PUBLIC_KEY_SHA256,
-  });
+// Health check endpoint. Exposing the expected/applied schema and build commit
+// prevents a healthy-looking old deployment from serving a newer desktop app.
+const EXPECTED_SCHEMA_VERSION = Math.max(...SCHEMA_MIGRATIONS.map((migration) => migration.version));
+const healthHandler = async (req, res) => {
+  try {
+    const schemaResult = await pool.query('SELECT COALESCE(MAX(version),0)::int AS version FROM cc_schema_migrations');
+    const appliedSchemaVersion = Number(schemaResult.rows[0]?.version || 0);
+    const ready = appliedSchemaVersion >= EXPECTED_SCHEMA_VERSION;
+    return res.status(ready ? 200 : 503).json({
+      status: ready ? 'ok' : 'schema_outdated',
+      timestamp: new Date().toISOString(),
+      version: '1.2.1',
+      merkaerp_compatibility: '1.2.1+5',
+      schema_version: appliedSchemaVersion,
+      expected_schema_version: EXPECTED_SCHEMA_VERSION,
+      build_commit: String(process.env.RENDER_GIT_COMMIT || process.env.BUILD_COMMIT || 'local').slice(0, 40),
+      publisher_key_fingerprint: CLIENT_PINNED_PUBLIC_KEY_SHA256,
+    });
+  } catch (error) {
+    console.error('Health check failed:', error.message);
+    return res.status(503).json({
+      status: 'database_unavailable',
+      timestamp: new Date().toISOString(),
+      version: '1.2.1',
+      expected_schema_version: EXPECTED_SCHEMA_VERSION,
+    });
+  }
 };
 
 app.get('/health', healthHandler);
@@ -1696,12 +2049,42 @@ app.post('/api/v1/licenses/validate', validateLicenseRequestToken, async (req, r
 });
 
 // Heartbeat endpoint
+async function setOperationalAlert({ key, clientId, installationId, priority = 'media', category = 'health', message, details = {}, active = true }) {
+  if (!key) return;
+  if (!active) {
+    await pool.query(
+      `UPDATE cc_alerts SET status='resolved',resolved_at=NOW(),updated_at=NOW()
+       WHERE alert_key=$1 AND LOWER(status) IN ('active','activa','open')`,
+      [key],
+    ).catch(() => {});
+    return;
+  }
+  const existing = await pool.query(
+    `SELECT id FROM cc_alerts WHERE alert_key=$1 AND LOWER(status) IN ('active','activa','open') ORDER BY id DESC LIMIT 1`,
+    [key],
+  );
+  if (existing.rows[0]) {
+    await pool.query(
+      `UPDATE cc_alerts SET priority=$1,client_id=$2,installation_id=$3,message=$4,category=$5,details_json=$6,updated_at=NOW(),resolved_at=NULL,status='active' WHERE id=$7`,
+      [priority, clientId || null, installationId || null, message, category, safeJson(details), existing.rows[0].id],
+    );
+  } else {
+    await pool.query(
+      `INSERT INTO cc_alerts(priority,client_id,installation_id,message,status,created_at,alert_key,category,details_json,updated_at)
+       VALUES($1,$2,$3,$4,'active',$5,$6,$7,$8,NOW())`,
+      [priority, clientId || null, installationId || null, message, new Date().toISOString(), key, category, safeJson(details)],
+    );
+  }
+}
+
 app.post('/api/v1/installations/heartbeat', validateClientToken, async (req, res) => {
   try {
     const {
       installationId, companyName, taxId, version, os, licenseStatus, syncStatus,
       databaseStatus, criticalErrors, ipAddress, uptimeHours, hardware_fingerprint,
-      hardwareFingerprint, licensePlan, licenseExpiry, metrics,
+      hardwareFingerprint, licensePlan, licenseExpiry, metrics, capabilities, agentVersion,
+      agent_version, architecture, freeDiskMb, free_disk_mb, memoryMb, memory_mb, lastBackupAt, last_backup_at,
+      dbSchemaVersion, db_schema_version, appBuildNumber, app_build_number,
     } = req.body || {};
     if (installationId && String(installationId) !== req.installationUuid) {
       return publicError(res, 403, 'Installation id does not match authenticated token');
@@ -1729,9 +2112,15 @@ app.post('/api/v1/installations/heartbeat', validateClientToken, async (req, res
          license_plan = COALESCE($12, license_plan),
          license_expiry = COALESCE($13, license_expiry),
          last_metrics_json = COALESCE($14, last_metrics_json),
+         capabilities_json = COALESCE($15, capabilities_json),
+         agent_version = COALESCE($16, agent_version),
+         architecture = COALESCE($17, architecture),
+         free_disk_mb = COALESCE($18, free_disk_mb),
+         memory_mb = COALESCE($19, memory_mb),
+         last_backup_at = COALESCE($20::timestamptz, last_backup_at),
          updated_at = $6,
          last_heartbeat = $6
-       WHERE uuid = $15 AND client_id = $16`,
+       WHERE uuid = $21 AND client_id = $22`,
       [
         version ? String(version) : null,
         os ? String(os) : null,
@@ -1747,12 +2136,57 @@ app.post('/api/v1/installations/heartbeat', validateClientToken, async (req, res
         licensePlan ? String(licensePlan) : null,
         licenseExpiry && !Number.isNaN(Date.parse(String(licenseExpiry))) ? String(licenseExpiry) : null,
         metrics && typeof metrics === 'object' && !Array.isArray(metrics) ? safeJson(metrics) : null,
+        Array.isArray(capabilities) ? safeJson(capabilities.map(String).slice(0, 200)) : null,
+        String(agentVersion ?? agent_version ?? '').trim() || null,
+        String(architecture ?? '').trim() || null,
+        Number.isFinite(Number(freeDiskMb ?? free_disk_mb)) ? Math.round(Number(freeDiskMb ?? free_disk_mb)) : null,
+        Number.isFinite(Number(memoryMb ?? memory_mb)) ? Math.round(Number(memoryMb ?? memory_mb)) : null,
+        (lastBackupAt ?? last_backup_at) && !Number.isNaN(Date.parse(String(lastBackupAt ?? last_backup_at))) ? String(lastBackupAt ?? last_backup_at) : null,
         req.installationUuid,
         req.clientId,
       ],
     );
+    await pool.query(
+      `UPDATE cc_installations SET db_schema_version=COALESCE($1,db_schema_version),app_build_number=COALESCE($2,app_build_number) WHERE uuid=$3`,
+      [String(dbSchemaVersion ?? db_schema_version ?? '').trim() || null, String(appBuildNumber ?? app_build_number ?? '').trim() || null, req.installationUuid],
+    ).catch(() => {});
+    const healthInput = {
+      connected: 1,
+      criticalErrors: Number.isFinite(Number(criticalErrors)) ? Number(criticalErrors) : 0,
+      freeDiskMb: Number.isFinite(Number(freeDiskMb ?? free_disk_mb)) ? Number(freeDiskMb ?? free_disk_mb) : null,
+      databaseStatus: databaseStatus || 'healthy',
+      syncStatus: syncStatus || 'synced',
+      lastBackupAt: lastBackupAt ?? last_backup_at ?? null,
+    };
+    const health = computeHealthScore(healthInput);
+    await pool.query('UPDATE cc_installations SET health_score=$1 WHERE uuid=$2', [health.score, req.installationUuid]);
+    await pool.query(
+      `INSERT INTO cc_health_checks(installation_uuid,health_score,health_status,summary_json) VALUES($1,$2,$3,$4)`,
+      [req.installationUuid, health.score, health.status, safeJson({ reasons: health.reasons, metrics: metrics || {} })],
+    ).catch(() => {});
+    await setOperationalAlert({
+      key: `health:${req.installationUuid}`,
+      clientId: req.clientId,
+      installationId: req.installationUuid,
+      priority: health.score < 40 ? 'critica' : 'alta',
+      category: 'health',
+      message: `Salud de instalación ${health.score}/100: ${health.reasons.join(', ') || 'sin detalle'}`,
+      details: health,
+      active: health.score < 70,
+    });
+    const diskValue = Number(freeDiskMb ?? free_disk_mb);
+    await setOperationalAlert({
+      key: `disk:${req.installationUuid}`,
+      clientId: req.clientId,
+      installationId: req.installationUuid,
+      priority: Number.isFinite(diskValue) && diskValue < 256 ? 'critica' : 'alta',
+      category: 'storage',
+      message: Number.isFinite(diskValue) ? `Espacio libre bajo: ${Math.round(diskValue)} MB` : 'Espacio libre no reportado',
+      details: { free_disk_mb: Number.isFinite(diskValue) ? Math.round(diskValue) : null },
+      active: Number.isFinite(diskValue) && diskValue < 1024,
+    });
     await pool.query('UPDATE cc_licenses SET last_heartbeat = $1 WHERE id = $2', [now, req.clientAuth.license_id]);
-    res.json({ success: true, message: 'Heartbeat recorded', server_time: now });
+    res.json({ success: true, message: 'Heartbeat recorded', server_time: now, health });
   } catch (error) {
     return serverError(res, 'Heartbeat error', error);
   }
@@ -2229,28 +2663,24 @@ app.get('/api/v1/installations/client/:clientId', validateAdminAuth, requirePerm
 });
 
 
-const CONTROL_CENTER_DISABLED_ACTIONS = new Map([
-  ['actualizar_modulos', 'Disabled for MerkaERP 1.2.1+5: the client command can replace local license metadata without preserving its signed identity'],
-  ['actualizar_licencia', 'Disabled for MerkaERP 1.2.1+5: the client command can replace local license metadata without preserving its signed identity'],
-  ['forzar_sincronizacion', 'Disabled for MerkaERP 1.2.1+5: the client currently records the request but does not execute a network synchronization'],
-]);
-
-async function queueSignedCommand({ installationUuid, action, params = {}, priority = 'info', title = null, executedBy = 'admin' }) {
+async function queueSignedCommand({ installationUuid, action, params = {}, priority = 'info', title = null, detail = null, executedBy = 'admin' }) {
   if (!ALLOWED_REMOTE_ACTIONS.has(String(action || ''))) {
     const error = new Error('Unsupported command action');
     error.statusCode = 400;
-    throw error;
-  }
-  if (CONTROL_CENTER_DISABLED_ACTIONS.has(String(action || ''))) {
-    const error = new Error(CONTROL_CENTER_DISABLED_ACTIONS.get(String(action || '')));
-    error.statusCode = 409;
     throw error;
   }
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
     const installationResult = await client.query(
-      `SELECT uuid, command_secret FROM cc_installations WHERE uuid=$1 FOR UPDATE`,
+      `SELECT i.uuid, i.command_secret, i.license_id, i.client_id, i.version, i.os, i.capabilities_json,
+              l.status AS bound_license_status, l.expires_at AS bound_license_expires_at, l.modules AS bound_license_modules,
+              l.license_type AS bound_license_type, l.product_family AS bound_product_family,
+              c.name AS bound_client_name
+       FROM cc_installations i
+       LEFT JOIN cc_licenses l ON l.id=i.license_id
+       LEFT JOIN cc_clients c ON c.id=i.client_id
+       WHERE i.uuid=$1 FOR UPDATE OF i`,
       [installationUuid],
     );
     const installation = installationResult.rows[0];
@@ -2265,7 +2695,46 @@ async function queueSignedCommand({ installationUuid, action, params = {}, prior
       throw error;
     }
 
-    const normalizedParams = params && typeof params === 'object' && !Array.isArray(params) ? params : {};
+    let normalizedParams = params && typeof params === 'object' && !Array.isArray(params) ? { ...params } : {};
+    if (action === 'actualizar_licencia' || action === 'actualizar_modulos') {
+      if (!installation.license_id || !installation.bound_license_expires_at) {
+        const error = new Error('Installation is not bound to a license');
+        error.statusCode = 409;
+        throw error;
+      }
+      const licenseStatus = normalizeLicenseStatus(installation.bound_license_status);
+      if (!['active', 'trial'].includes(licenseStatus)) {
+        const error = new Error('Bound license is not active');
+        error.statusCode = 409;
+        throw error;
+      }
+      const modules = parseModules(installation.bound_license_modules);
+      const family = normalizeProductFamily(installation.bound_product_family, modules);
+      const licenseToken = generateLicenseToken({
+        license_id: installation.license_id,
+        installation_id: installation.uuid,
+        hardware_fingerprint: (await client.query('SELECT hardware_fingerprint FROM cc_installations WHERE uuid=$1',[installationUuid])).rows[0]?.hardware_fingerprint || '',
+        license_type: installation.bound_license_type,
+        status: licenseStatus,
+        expiry_date: installation.bound_license_expires_at,
+        modules,
+        product_family: family,
+        client_id: installation.client_id,
+        client_name: installation.bound_client_name,
+      }, installation.bound_license_expires_at);
+      normalizedParams = {
+        ...normalizedParams,
+        license_token: licenseToken,
+        license: {
+          id: Number(installation.license_id),
+          status: licenseStatus,
+          expires_at: installation.bound_license_expires_at,
+          license_type: normalizeLicenseType(installation.bound_license_type),
+          modules,
+          product_family: family,
+        },
+      };
+    }
     const paramsBytes = Buffer.byteLength(JSON.stringify(normalizedParams), 'utf8');
     if (paramsBytes > 64 * 1024) {
       const error = new Error('Remote command parameters exceed 64 KiB');
@@ -2286,23 +2755,52 @@ async function queueSignedCommand({ installationUuid, action, params = {}, prior
         throw error;
       }
     }
-    if (action === 'forzar_actualizacion') {
-      const version = String(normalizedParams.version || '').trim();
+    if (['forzar_actualizacion', 'aplicar_hotfix', 'rollback_actualizacion'].includes(action)) {
+      const version = String(normalizedParams.version || normalizedParams.target_version || '').trim();
       if (!/^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/.test(version)) {
-        const error = new Error('forzar_actualizacion requires a valid version');
+        const error = new Error(`${action} requires a valid version`);
         error.statusCode = 400;
         throw error;
       }
+      const requestedReleaseId = Number.parseInt(String(normalizedParams.release_id || ''), 10);
+      const releaseParams = [];
+      const releaseWhere = [];
+      if (Number.isInteger(requestedReleaseId) && requestedReleaseId > 0) {
+        releaseParams.push(requestedReleaseId);
+        releaseWhere.push(`id=$${releaseParams.length}`);
+      } else {
+        releaseParams.push(version);
+        releaseWhere.push(`version=$${releaseParams.length}`);
+      }
+      releaseParams.push(normalizeProductFamily(installation.bound_product_family));
+      releaseWhere.push(`product_family IN ('ALL',$${releaseParams.length})`);
       const release = await client.query(
-        `SELECT id FROM cc_releases WHERE version=$1 AND LOWER(status)='published'
-         AND download_url ~* '^https://' AND sha256 ~ '^[a-fA-F0-9]{64}$' AND size_bytes > 0 LIMIT 1`,
-        [version],
+        `SELECT id,version,release_type,product_family,sha256,size_bytes,artifact_path,download_url
+         FROM cc_releases WHERE ${releaseWhere.join(' AND ')} AND LOWER(status)='published'
+         AND (artifact_path IS NOT NULL OR download_url ~* '^https://')
+         AND sha256 ~ '^[a-fA-F0-9]{64}$' AND size_bytes > 0
+         ORDER BY id DESC LIMIT 1`,
+        releaseParams,
       );
-      if (!release.rows[0]) {
-        const error = new Error('The requested version is not a complete published release');
+      if (!release.rows[0] || String(release.rows[0].version) !== version) {
+        const error = new Error('The requested version is not a complete published release compatible with this installation edition');
         error.statusCode = 409;
         throw error;
       }
+      if (action === 'aplicar_hotfix' && String(release.rows[0].release_type || '').toLowerCase() !== 'hotfix') {
+        const error = new Error('aplicar_hotfix requires a release_type=hotfix artifact');
+        error.statusCode = 409;
+        throw error;
+      }
+      normalizedParams = {
+        ...normalizedParams,
+        release_id: String(release.rows[0].id),
+        version,
+        target_version: version,
+        product_family: String(release.rows[0].product_family || 'ALL'),
+        sha256: String(release.rows[0].sha256 || '').toLowerCase(),
+        size_bytes: Number(release.rows[0].size_bytes || 0),
+      };
     }
     if (action === 'solicitar_acceso_remoto') {
       const sessionId = Number.parseInt(String(normalizedParams.session_id || ''), 10);
@@ -2323,7 +2821,7 @@ async function queueSignedCommand({ installationUuid, action, params = {}, prior
         params_json, nonce, expires_at, signature)
        VALUES ($1,$2,$3,$4,$5,'pending',$6,$7,$8,$9,$10,NULL)
        RETURNING id`,
-      [installationUuid, action, priority || 'info', title || action, paramsJson, timestamp, executedBy, paramsJson, nonce, expiresAt],
+      [installationUuid, action, priority || 'info', title || action, detail == null ? '' : String(detail).slice(0, 4000), timestamp, executedBy, paramsJson, nonce, expiresAt],
     );
     const id = String(inserted.rows[0].id);
     const signature = signCommand(installation.command_secret, {
@@ -2345,6 +2843,176 @@ async function queueSignedCommand({ installationUuid, action, params = {}, prior
     client.release();
   }
 }
+
+
+async function triggerAutomaticRollback(deploymentId) {
+  const tx = await pool.connect();
+  let rollback = null;
+  let targets = [];
+  try {
+    await tx.query('BEGIN');
+    const original = (await tx.query(
+      `SELECT d.*,r.version,r.rollback_version
+       FROM cc_deployments d JOIN cc_releases r ON r.id=d.release_id
+       WHERE d.id=$1 FOR UPDATE OF d`,
+      [deploymentId],
+    )).rows[0];
+    if (!original || Number(original.auto_rollback || 0) !== 1 || original.rollback_deployment_id) {
+      await tx.query('ROLLBACK');
+      return null;
+    }
+    const targetVersion = String(original.rollback_version || '').trim();
+    if (!/^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/.test(targetVersion)) {
+      await tx.query('ROLLBACK');
+      return null;
+    }
+    const targetRelease = (await tx.query(
+      `SELECT * FROM cc_releases
+       WHERE version=$1 AND status='published' AND product_family IN ('ALL',$2)
+         AND (artifact_path IS NOT NULL OR download_url ~* '^https://')
+         AND sha256 ~ '^[a-fA-F0-9]{64}$' AND size_bytes>0
+       ORDER BY CASE WHEN product_family=$2 THEN 0 ELSE 1 END,id DESC LIMIT 1`,
+      [targetVersion, original.product_family],
+    )).rows[0];
+    if (!targetRelease) {
+      await tx.query('ROLLBACK');
+      return null;
+    }
+    targets = (await tx.query(
+      `SELECT installation_uuid FROM cc_deployment_targets
+       WHERE deployment_id=$1 AND status='completed' ORDER BY id LIMIT 1000`,
+      [deploymentId],
+    )).rows;
+    if (targets.length === 0) {
+      await tx.query('ROLLBACK');
+      return null;
+    }
+    rollback = (await tx.query(
+      `INSERT INTO cc_deployments
+       (release_id,name,scope_type,scope_id,product_family,strategy,status,target_count,created_by,batch_pct,error_threshold_pct,rollback_of,auto_rollback,started_at)
+       VALUES($1,$2,'rollback',$3,$4,'immediate','running',$5,'auto-rollback',100,100,$6,0,NOW()) RETURNING *`,
+      [targetRelease.id, `Auto rollback ${original.version} -> ${targetVersion}`, String(deploymentId), original.product_family, targets.length, deploymentId],
+    )).rows[0];
+    for (const row of targets) {
+      await tx.query(
+        `INSERT INTO cc_deployment_targets(deployment_id,installation_uuid,status,previous_version)
+         VALUES($1,$2,'pending',$3) ON CONFLICT DO NOTHING`,
+        [rollback.id, row.installation_uuid, original.version],
+      );
+    }
+    await tx.query(
+      `UPDATE cc_deployments SET rollback_deployment_id=$1,paused_at=COALESCE(paused_at,NOW()) WHERE id=$2`,
+      [rollback.id, deploymentId],
+    );
+    await tx.query('COMMIT');
+  } catch (error) {
+    await tx.query('ROLLBACK').catch(() => {});
+    throw error;
+  } finally {
+    tx.release();
+  }
+
+  let queued = 0;
+  let failed = 0;
+  for (const row of targets) {
+    try {
+      const command = await queueSignedCommand({
+        installationUuid: row.installation_uuid,
+        action: 'rollback_actualizacion',
+        params: {
+          version: String((await pool.query('SELECT version FROM cc_releases WHERE id=$1', [rollback.release_id])).rows[0]?.version || ''),
+          release_id: String(rollback.release_id),
+          deployment_id: String(rollback.id),
+          rollback_of: String(deploymentId),
+        },
+        priority: 'critica',
+        title: `Rollback automático de despliegue #${deploymentId}`,
+        executedBy: 'auto-rollback',
+      });
+      await pool.query(
+        `UPDATE cc_deployment_targets SET command_id=$1,status='queued',attempt_count=attempt_count+1,last_attempt_at=NOW(),updated_at=NOW()
+         WHERE deployment_id=$2 AND installation_uuid=$3`,
+        [Number(command.id), rollback.id, row.installation_uuid],
+      );
+      queued += 1;
+    } catch (error) {
+      await pool.query(
+        `UPDATE cc_deployment_targets SET status='failed',last_error=$1,attempt_count=attempt_count+1,last_attempt_at=NOW(),updated_at=NOW()
+         WHERE deployment_id=$2 AND installation_uuid=$3`,
+        [String(error.message || error).slice(0, 2000), rollback.id, row.installation_uuid],
+      ).catch(() => {});
+      failed += 1;
+    }
+  }
+  await pool.query(
+    `UPDATE cc_deployments SET failed_count=$1,status=CASE WHEN $2=0 THEN 'completed_with_errors' ELSE 'running' END,
+     completed_at=CASE WHEN $2=0 THEN NOW() ELSE completed_at END WHERE id=$3`,
+    [failed, queued, rollback.id],
+  );
+  await setOperationalAlert({
+    key: `deployment-auto-rollback:${deploymentId}`,
+    priority: 'critica',
+    category: 'deployment',
+    message: `Rollback automático iniciado para despliegue #${deploymentId}`,
+    details: { deployment_id: deploymentId, rollback_deployment_id: rollback.id, queued, failed },
+    active: true,
+  }).catch(() => {});
+  return { rollback, queued, failed };
+}
+
+async function processDueScheduledDeployments() {
+  const due = await pool.query(
+    `SELECT d.*,r.version,r.release_type
+     FROM cc_deployments d JOIN cc_releases r ON r.id=d.release_id
+     WHERE d.strategy='scheduled' AND d.scheduled_at IS NOT NULL AND d.scheduled_at<=NOW()
+       AND d.status IN ('draft','queued','running')
+     ORDER BY d.scheduled_at ASC LIMIT 20`,
+  );
+  for (const deployment of due.rows) {
+    await pool.query(
+      `UPDATE cc_deployments SET status='running',started_at=COALESCE(started_at,NOW()),paused_at=NULL WHERE id=$1`,
+      [deployment.id],
+    );
+    const targets = await pool.query(
+      `SELECT * FROM cc_deployment_targets WHERE deployment_id=$1 AND status='pending' ORDER BY id LIMIT 500`,
+      [deployment.id],
+    );
+    for (const target of targets.rows) {
+      try {
+        const action = deployment.rollback_of
+          ? 'rollback_actualizacion'
+          : (deployment.release_type === 'hotfix' ? 'aplicar_hotfix' : 'forzar_actualizacion');
+        const command = await queueSignedCommand({
+          installationUuid: target.installation_uuid,
+          action,
+          params: {
+            version: deployment.version,
+            target_version: deployment.version,
+            release_id: String(deployment.release_id),
+            deployment_id: String(deployment.id),
+          },
+          priority: 'alta',
+          title: `Despliegue programado ${deployment.version}`,
+          executedBy: deployment.created_by || 'scheduler',
+        });
+        await pool.query(
+          `UPDATE cc_deployment_targets SET command_id=$1,status='queued',attempt_count=attempt_count+1,last_attempt_at=NOW(),updated_at=NOW() WHERE id=$2`,
+          [Number(command.id), target.id],
+        );
+      } catch (error) {
+        await pool.query(
+          `UPDATE cc_deployment_targets SET status='failed',last_error=$1,attempt_count=attempt_count+1,last_attempt_at=NOW(),updated_at=NOW() WHERE id=$2`,
+          [String(error.message || error).slice(0, 2000), target.id],
+        );
+      }
+    }
+  }
+}
+
+registerFleetRoutes({
+  app, pool, validateAdminAuth, validateClientToken, requirePermission, requireRole,
+  publicError, serverError, queueSignedCommand, normalizeProductFamily, normalizeLicenseStatus,
+});
 
 // GET /api/v1/installations/:uuid/commands - authenticated, signed command polling.
 app.get('/api/v1/installations/:uuid/commands', validateClientToken, async (req, res) => {
@@ -2388,12 +3056,14 @@ app.post('/api/v1/commands/:commandId/ack', validateClientToken, async (req, res
     const ackStatus = String(req.body?.status || '').trim().toLowerCase();
     const installationId = String(req.body?.installation_id || req.body?.installationId || req.installationUuid);
     const message = req.body?.message == null ? '' : String(req.body.message).slice(0, 10000);
+    const ackResult = req.body?.result && typeof req.body.result === 'object' && !Array.isArray(req.body.result)
+      ? req.body.result : {};
     if (!Number.isInteger(commandId) || commandId <= 0) return publicError(res, 400, 'Invalid command id');
     if (installationId !== req.installationUuid) return publicError(res, 403, 'Installation mismatch');
     if (!/^[a-z_]{2,64}$/.test(ackStatus)) return publicError(res, 400, 'Invalid command acknowledgement status');
-    const successStatuses = new Set(['done', 'complete', 'completed', 'installer_started', 'accepted', 'approved', 'ok']);
+    const successStatuses = new Set(['done', 'complete', 'completed', 'success', 'installer_started', 'accepted', 'approved', 'ok']);
     const normalizedStatus = successStatuses.has(ackStatus) ? 'completed' : 'failed';
-    const resultPayload = safeJson({ ack_status: ackStatus, message });
+    const resultPayload = safeJson({ ack_status: ackStatus, message, result: ackResult });
     const updated = await pool.query(
       `UPDATE cc_commands SET status=$1, result=$2, ack_at=$3
        WHERE id=$4 AND installation_uuid=$5 AND status='pending'
@@ -2406,6 +3076,100 @@ app.post('/api/v1/commands/:commandId/ack', validateClientToken, async (req, res
     // signed-command ACK channel. Reflect that consent in the administrative
     // session record; no streaming/control transport is implied by approval.
     const acknowledged = updated.rows[0];
+    const completedAt = new Date().toISOString();
+    await setOperationalAlert({
+      key: `command-failure:${req.installationUuid}:${acknowledged.action}`,
+      clientId: req.clientId,
+      installationId: req.installationUuid,
+      priority: normalizedStatus === 'failed' ? 'alta' : 'info',
+      category: 'remote-command',
+      message: normalizedStatus === 'failed' ? `Falló comando remoto: ${acknowledged.action}` : '',
+      details: normalizedStatus === 'failed' ? { command_id: commandId, action: acknowledged.action, message, result: ackResult } : {},
+      active: normalizedStatus === 'failed',
+    }).catch(() => {});
+    const deploymentTarget = await pool.query(
+      `UPDATE cc_deployment_targets SET status=$1,last_error=CASE WHEN $1='failed' THEN $2 ELSE NULL END,updated_at=NOW() WHERE command_id=$3 RETURNING deployment_id`,
+      [normalizedStatus, normalizedStatus === 'failed' ? message : null, commandId],
+    ).catch(() => ({ rows: [] }));
+    const deploymentId = deploymentTarget.rows?.[0]?.deployment_id;
+    if (deploymentId) {
+      const deploymentStats = (await pool.query(
+        `SELECT d.error_threshold_pct,d.auto_rollback,d.rollback_deployment_id,r.rollback_version,
+          COUNT(*) FILTER(WHERE t.status='completed')::int success,
+          COUNT(*) FILTER(WHERE t.status='failed')::int failed,
+          COUNT(*) FILTER(WHERE t.status='pending')::int pending,
+          COUNT(*) FILTER(WHERE t.status='queued')::int queued
+         FROM cc_deployments d JOIN cc_releases r ON r.id=d.release_id JOIN cc_deployment_targets t ON t.deployment_id=d.id
+         WHERE d.id=$1 GROUP BY d.id,d.error_threshold_pct,d.auto_rollback,d.rollback_deployment_id,r.rollback_version`,
+        [deploymentId],
+      )).rows[0];
+      if (deploymentStats) {
+        const observed = Number(deploymentStats.success) + Number(deploymentStats.failed);
+        const failurePct = observed > 0 ? Number(deploymentStats.failed) * 100 / observed : 0;
+        const noWorkLeft = Number(deploymentStats.pending) === 0 && Number(deploymentStats.queued) === 0;
+        const autoPause = observed >= 3 && failurePct >= Number(deploymentStats.error_threshold_pct || 20) && !noWorkLeft;
+        const deploymentStatus = noWorkLeft
+          ? (Number(deploymentStats.failed) > 0 ? 'completed_with_errors' : 'completed')
+          : (autoPause ? 'paused' : 'running');
+        await pool.query(
+          `UPDATE cc_deployments SET status=$1,success_count=$2,failed_count=$3,
+           paused_at=CASE WHEN $1='paused' THEN NOW() ELSE paused_at END,
+           completed_at=CASE WHEN $1 IN ('completed','completed_with_errors') THEN NOW() ELSE completed_at END
+           WHERE id=$4`,
+          [deploymentStatus, deploymentStats.success, deploymentStats.failed, deploymentId],
+        );
+        if (autoPause && Number(deploymentStats.auto_rollback || 0) === 1 && !deploymentStats.rollback_deployment_id && deploymentStats.rollback_version) {
+          triggerAutomaticRollback(Number(deploymentId)).catch((error) => console.error('Automatic rollback failed:', error.message));
+        }
+      }
+    }
+    await pool.query(
+      `UPDATE cc_diagnostic_runs SET status=$1,result_json=$2,completed_at=$3 WHERE command_id=$4`,
+      [normalizedStatus, resultPayload, completedAt, commandId],
+    ).catch(() => {});
+    await pool.query(
+      `UPDATE cc_repair_runs SET status=$1,result_json=$2,completed_at=$3 WHERE command_id=$4`,
+      [normalizedStatus, resultPayload, completedAt, commandId],
+    ).catch(() => {});
+    await pool.query(
+      `UPDATE cc_restore_jobs SET status=$1,result_json=$2,completed_at=$3 WHERE command_id=$4`,
+      [normalizedStatus, resultPayload, completedAt, commandId],
+    ).catch(() => {});
+    await pool.query(
+      `UPDATE cc_agent_artifact_requests SET status=CASE WHEN $1='failed' THEN 'failed' ELSE 'awaiting_upload' END,
+       completed_at=CASE WHEN $1='failed' THEN $2 ELSE completed_at END
+       WHERE command_id=$3 AND status<>'completed'`,
+      [normalizedStatus, completedAt, commandId],
+    ).catch(() => {});
+    let acknowledgedParams = {};
+    try { acknowledgedParams = JSON.parse(acknowledged.params_json || '{}'); } catch (_) {}
+    if (normalizedStatus === 'completed' && ['forzar_actualizacion','aplicar_hotfix','rollback_actualizacion'].includes(acknowledged.action)) {
+      const installedVersion = String(ackResult.installed_version || acknowledgedParams.target_version || acknowledgedParams.version || '').trim();
+      if (/^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/.test(installedVersion)) {
+        await pool.query(`UPDATE cc_installations SET version=$1,updated_at=NOW() WHERE uuid=$2`, [installedVersion, req.installationUuid]).catch(() => {});
+      }
+    }
+    if (acknowledged.action === 'forzar_respaldo' && acknowledgedParams.backup_id) {
+      const backupId = Number.parseInt(String(acknowledgedParams.backup_id), 10);
+      if (Number.isInteger(backupId) && backupId > 0) {
+        await pool.query(
+          `UPDATE cc_backups SET status=$1,size_mb=COALESCE($2,size_mb),backup_ref=COALESCE($3,backup_ref),checksum=COALESCE($4,checksum),completed_at=$5,last_run=$5 WHERE id=$6`,
+          [normalizedStatus, Number.isFinite(Number(ackResult.size_mb)) ? Number(ackResult.size_mb) : null, ackResult.backup_ref ? String(ackResult.backup_ref) : null, ackResult.checksum ? String(ackResult.checksum) : null, completedAt, backupId],
+        ).catch(() => {});
+        if (normalizedStatus === 'completed') {
+          await pool.query(`UPDATE cc_installations SET last_backup_at=$1 WHERE uuid=$2`, [completedAt, req.installationUuid]).catch(() => {});
+        }
+      }
+    }
+    if (acknowledged.action === 'run_diagnostics' || acknowledged.action === 'collect_diagnostics') {
+      await pool.query(`UPDATE cc_installations SET last_diagnostic_at=$1 WHERE uuid=$2`, [completedAt, req.installationUuid]).catch(() => {});
+    }
+    if (acknowledged.action === 'entrar_mantenimiento' && normalizedStatus === 'completed') {
+      await pool.query(`UPDATE cc_installations SET maintenance_mode=1 WHERE uuid=$1`, [req.installationUuid]).catch(() => {});
+    } else if (acknowledged.action === 'salir_mantenimiento' && normalizedStatus === 'completed') {
+      await pool.query(`UPDATE cc_installations SET maintenance_mode=0 WHERE uuid=$1`, [req.installationUuid]).catch(() => {});
+    }
+
     if (acknowledged.action === 'solicitar_acceso_remoto') {
       let params = {};
       try { params = JSON.parse(acknowledged.params_json || '{}'); } catch (_) {}
@@ -2654,6 +3418,7 @@ async function saveClient(req, res, idOverride = null) {
     const password = req.body.password ?? req.body.client_password ?? '';
     const licenseType = req.body.licenseType ?? req.body.license_type ?? 'SUSCRIPCION';
     const subscriptionMonths = req.body.subscriptionMonths ?? req.body.subscription_months ?? 12;
+    const productFamily = normalizeProductFamily(req.body.productFamily ?? req.body.product_family ?? 'COMMERCIAL');
 
     if (!name || !plan || !renewalDate) return publicError(res, 400, 'name, plan and renewal_date are required');
     if (contactEmail) {
@@ -2674,9 +3439,13 @@ async function saveClient(req, res, idOverride = null) {
 
     if (id) {
       // Actualizar cliente existente
-      const existing = await pool.query('SELECT client_password FROM cc_clients WHERE id = $1', [id]);
+      const existing = await pool.query('SELECT client_password,status FROM cc_clients WHERE id = $1', [id]);
       if (existing.rowCount === 0) {
         return res.status(404).json({ success: false, error: 'Client not found' });
+      }
+      const existingStatus = normalizeLicenseStatus(existing.rows[0].status);
+      if (status !== existingStatus) {
+        return publicError(res, 409, 'Use the client lifecycle endpoint to change status');
       }
       const storedPassword = passwordHash || existing.rows[0].client_password || null;
       const result = await pool.query(
@@ -2687,7 +3456,9 @@ async function saveClient(req, res, idOverride = null) {
          RETURNING *`,
         [name, nit, city, country, status, plan, contractValue, contractValueMinor, renewalDate, usageScore, resellerId, taxRate, billingType, billingDay, notes, contactName, contactPhone, contactEmail, contactRole, storedPassword, licenseType, subscriptionMonths, id]
       );
+      await pool.query('UPDATE cc_clients SET product_family=$1 WHERE id=$2', [productFamily, id]);
       const { client_password, ...client } = result.rows[0];
+      client.product_family = productFamily;
       res.json({ success: true, message: 'Client updated', client });
     } else {
       // Crear nuevo cliente
@@ -2699,7 +3470,9 @@ async function saveClient(req, res, idOverride = null) {
          RETURNING *`,
         [name, nit, city, country, status, plan, contractValue, contractValueMinor, renewalDate, usageScore, new Date().toISOString(), resellerId, taxRate, billingType, billingDay, notes, contactName, contactPhone, contactEmail, contactRole, passwordHash, licenseType, subscriptionMonths]
       );
+      await pool.query('UPDATE cc_clients SET product_family=$1 WHERE id=$2', [productFamily, result.rows[0].id]);
       const { client_password, ...client } = result.rows[0];
+      client.product_family = productFamily;
       res.json({ success: true, message: 'Client created', id: client.id, client });
     }
   } catch (error) {
@@ -2727,19 +3500,38 @@ async function saveLicense(req, res, idOverride = null) {
   try {
     const id = idOverride ?? req.body.id;
     const clientId = req.body.clientId ?? req.body.client_id;
-    const type = req.body.type;
+    let type = req.body.type;
     const status = normalizeLicenseStatus(req.body.status ?? 'active');
     const expiresAt = req.body.expiresAt ?? req.body.expires_at;
-    const maxUsers = req.body.maxUsers ?? req.body.max_users ?? 1;
-    const maxDevices = req.body.maxDevices ?? req.body.max_devices ?? 1;
-    const maxBranches = req.body.maxBranches ?? req.body.max_branches ?? 1;
-    const requestedFamily = req.body.productFamily ?? req.body.product_family ?? 'COMMERCIAL';
+    let maxUsers = req.body.maxUsers ?? req.body.max_users ?? 1;
+    let maxDevices = req.body.maxDevices ?? req.body.max_devices ?? 1;
+    let maxBranches = req.body.maxBranches ?? req.body.max_branches ?? 1;
+    let requestedFamily = req.body.productFamily ?? req.body.product_family ?? 'COMMERCIAL';
     const defaultModules = normalizeProductFamily(requestedFamily) === 'PUBLIC'
       ? 'presupuesto_publico,contabilidad_nicsp,contratacion_publica,nomina_publica,sgdea_publico,transparencia,regalias,sgp,siif,salud_publica'
       : 'sales,purchases,inventory,cash,accounting,reports';
-    const modulesList = parseModules(req.body.modules ?? defaultModules);
-    const modules = modulesList.join(',');
-    const productFamily = normalizeProductFamily(requestedFamily, modulesList);
+    let modulesList = parseModules(req.body.modules ?? defaultModules);
+    let modules = modulesList.join(',');
+    let productFamily = normalizeProductFamily(requestedFamily, modulesList);
+    const requestedPlanKey = String(req.body.planKey ?? req.body.plan_key ?? '').trim().toUpperCase();
+    let planKey = requestedPlanKey || null;
+    if (planKey) {
+      const plan = (await pool.query('SELECT * FROM cc_plans WHERE plan_key=$1 AND active=1 LIMIT 1', [planKey])).rows[0];
+      if (!plan) return publicError(res, 409, 'The selected plan is not active');
+      const limits = safeParseJson(plan.limits_json, {});
+      const planModules = safeParseJson(plan.modules_json, []);
+      if (!limits || typeof limits !== 'object' || Array.isArray(limits) || !Array.isArray(planModules)) {
+        return publicError(res, 500, 'The selected plan has an invalid catalog configuration');
+      }
+      type = String(plan.name);
+      maxUsers = Number(limits.users || 1);
+      maxDevices = Number(limits.devices || 1);
+      maxBranches = Number(limits.branches || 1);
+      modulesList = parseModules(planModules);
+      modules = modulesList.join(',');
+      requestedFamily = plan.product_family;
+      productFamily = normalizeProductFamily(plan.product_family, modulesList);
+    }
     const tokenHint = req.body.tokenHint ?? req.body.token_hint ?? null;
     const updatedAt = req.body.updatedAt ?? req.body.updated_at ?? new Date().toISOString();
     const licenseType = normalizeLicenseType(req.body.licenseType ?? req.body.license_type ?? 'SUSCRIPCION');
@@ -2757,9 +3549,25 @@ async function saveLicense(req, res, idOverride = null) {
     if (!Number.isInteger(Number(maxDevices)) || Number(maxDevices) < 1 || Number(maxDevices) > 1000) {
       return publicError(res, 400, 'max_devices must be between 1 and 1000');
     }
+    if (!Number.isInteger(Number(maxUsers)) || Number(maxUsers) < 1 || Number(maxUsers) > 10000) {
+      return publicError(res, 400, 'max_users must be between 1 and 10000');
+    }
+    if (!Number.isInteger(Number(maxBranches)) || Number(maxBranches) < 1 || Number(maxBranches) > 10000) {
+      return publicError(res, 400, 'max_branches must be between 1 and 10000');
+    }
     if (Number.isNaN(Date.parse(expiresAt))) return publicError(res, 400, 'Invalid expires_at');
 
     if (id) {
+      const existingLicense = await pool.query('SELECT status,plan_key FROM cc_licenses WHERE id=$1 LIMIT 1', [id]);
+      if (!existingLicense.rows[0]) return publicError(res, 404, 'License not found');
+      planKey ??= existingLicense.rows[0].plan_key || null;
+      const existingStatus = normalizeLicenseStatus(existingLicense.rows[0].status);
+      if (existingStatus === 'revoked' && status !== 'revoked') {
+        return publicError(res, 409, 'A revoked license is immutable; issue a new license instead');
+      }
+      if (status !== existingStatus) {
+        return publicError(res, 409, 'Use the license lifecycle endpoint to change status');
+      }
       const usage = await pool.query(
         `SELECT COUNT(*)::int AS count FROM (
            SELECT hardware_fingerprint FROM cc_installations
@@ -2778,12 +3586,29 @@ async function saveLicense(req, res, idOverride = null) {
         `UPDATE cc_licenses SET client_id = $1, type = $2, status = $3, expires_at = $4,
          max_users = $5, max_devices = $6, max_branches = $7, modules = $8, token_hint = $9,
          updated_at = $10, license_type = $11, hardware_fingerprint = $12, offline_token = NULL,
-         activation_count = $13, last_heartbeat = $14, grace_period_end = $15, product_family = $16
-         WHERE id = $17 RETURNING *`,
-        [clientId, type, status, expiresAt, maxUsers, maxDevices, maxBranches, modules, tokenHint, updatedAt, licenseType, hardwareFingerprint, activationCount, lastHeartbeat, gracePeriodEnd, productFamily, id]
+         activation_count = $13, last_heartbeat = $14, grace_period_end = $15, product_family = $16,
+         plan_key = $17
+         WHERE id = $18 RETURNING *`,
+        [clientId, type, status, expiresAt, maxUsers, maxDevices, maxBranches, modules, tokenHint, updatedAt, licenseType, hardwareFingerprint, activationCount, lastHeartbeat, gracePeriodEnd, productFamily, planKey, id]
       );
       if (result.rowCount === 0) {
         return res.status(404).json({ success: false, error: 'License not found' });
+      }
+      // Propagate signed license/module changes to already provisioned clients.
+      // Failures are non-fatal because offline installations can refresh on the
+      // next validation/bootstrap cycle.
+      if (['active','trial'].includes(status)) {
+        const installs = await pool.query(`SELECT uuid FROM cc_installations WHERE license_id=$1 AND COALESCE(blocked,0)=0 ORDER BY id LIMIT 200`, [id]);
+        for (const row of installs.rows) {
+          await queueSignedCommand({
+            installationUuid: row.uuid,
+            action: 'actualizar_licencia',
+            params: { reason: 'license_record_updated' },
+            priority: 'alta',
+            title: 'Actualizar licencia firmada',
+            executedBy: req.user?.username || 'admin',
+          }).catch(() => {});
+        }
       }
       return res.json({ success: true, license: sanitizeLicenseRow(result.rows[0]) });
     }
@@ -2791,10 +3616,10 @@ async function saveLicense(req, res, idOverride = null) {
     const result = await pool.query(
       `INSERT INTO cc_licenses (client_id, type, status, expires_at, max_users, max_devices,
        max_branches, modules, token_hint, updated_at, license_type, hardware_fingerprint,
-       offline_token, activation_count, last_heartbeat, grace_period_end, product_family)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, NULL, $13, $14, $15, $16)
+       offline_token, activation_count, last_heartbeat, grace_period_end, product_family, plan_key)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, NULL, $13, $14, $15, $16, $17)
        RETURNING *`,
-      [clientId, type, status, expiresAt, maxUsers, maxDevices, maxBranches, modules, tokenHint, updatedAt, licenseType, hardwareFingerprint, activationCount, lastHeartbeat, gracePeriodEnd, productFamily]
+      [clientId, type, status, expiresAt, maxUsers, maxDevices, maxBranches, modules, tokenHint, updatedAt, licenseType, hardwareFingerprint, activationCount, lastHeartbeat, gracePeriodEnd, productFamily, planKey]
     );
     res.json({ success: true, id: result.rows[0].id, license: sanitizeLicenseRow(result.rows[0]) });
   } catch (error) {
@@ -2847,8 +3672,8 @@ app.delete('/api/v1/licenses/:id', validateAdminAuth, requirePermission('license
   try {
     await tx.query('BEGIN');
     const result = await tx.query(
-      `UPDATE cc_licenses SET status='revoked', offline_token=NULL, updated_at=NOW() WHERE id=$1 RETURNING id`,
-      [id],
+      `UPDATE cc_licenses SET status='revoked', status_reason=COALESCE(NULLIF($2,''),'Revocada desde Control Center'), revoked_at=COALESCE(revoked_at,NOW()), offline_token=NULL, updated_at=NOW() WHERE id=$1 RETURNING id`,
+      [id, String(req.body?.reason || req.query?.reason || '')],
     );
     if (result.rowCount === 0) {
       await tx.query('ROLLBACK');
@@ -3119,7 +3944,7 @@ app.get('/api/v1/clients', validateAdminAuth, requirePermission('read'), async (
       SELECT id, name, nit, city, country, status, plan, contract_value, renewal_date,
              usage_score, created_at, reseller_id, tax_rate, billing_type, billing_day,
              notes, contact_name, contact_phone, contact_email, contact_role,
-             license_type, subscription_months
+             license_type, subscription_months, product_family, lifecycle_reason, archived_at, support_policy_json
       FROM cc_clients
       ORDER BY id DESC
     `);
@@ -3148,7 +3973,7 @@ app.get('/api/v1/clients/:id', validateAdminAuth, requirePermission('read'), asy
       SELECT id, name, nit, city, country, status, plan, contract_value, renewal_date,
              usage_score, created_at, reseller_id, tax_rate, billing_type, billing_day,
              notes, contact_name, contact_phone, contact_email, contact_role,
-             license_type, subscription_months
+             license_type, subscription_months, product_family, lifecycle_reason, archived_at, support_policy_json
       FROM cc_clients
       WHERE id = $1
       LIMIT 1
@@ -3170,14 +3995,14 @@ app.delete('/api/v1/clients/:id', validateAdminAuth, requirePermission('crm:writ
   try {
     await tx.query('BEGIN');
     const result = await tx.query(
-      `UPDATE cc_clients SET status='cancelled', updated_at=NOW() WHERE id=$1 RETURNING id`,
-      [id],
+      `UPDATE cc_clients SET status='cancelled', lifecycle_reason=COALESCE(NULLIF($2,''),'Desactivado desde Control Center'), archived_at=NOW(), updated_at=NOW() WHERE id=$1 RETURNING id`,
+      [id, String(req.body?.reason || req.query?.reason || '')],
     );
     if (result.rowCount === 0) {
       await tx.query('ROLLBACK');
       return publicError(res, 404, 'Client not found');
     }
-    await tx.query(`UPDATE cc_licenses SET status='revoked', offline_token=NULL, updated_at=NOW() WHERE client_id=$1`, [id]);
+    await tx.query(`UPDATE cc_licenses SET status='revoked', status_reason='Cliente desactivado', revoked_at=COALESCE(revoked_at,NOW()), offline_token=NULL, updated_at=NOW() WHERE client_id=$1`, [id]);
     await tx.query(
       `UPDATE cc_installations SET blocked=1, block_reason='Cliente desactivado', status='blocked', connected=0, updated_at=NOW() WHERE client_id=$1`,
       [id],
@@ -3968,8 +4793,10 @@ app.post('/api/v1/admin/reports/:name', validateAdminAuth, requirePermission('re
 });
 
 // ─── SIGNED UPDATE MANIFESTS (MerkaERP 1.2.1+5) ───────────────────────────────
-const UPDATE_CHANNELS = new Set(['stable', 'beta', 'hotfix']);
+const UPDATE_CHANNELS = new Set(['development', 'internal', 'beta', 'rc', 'stable', 'lts', 'hotfix']);
 const SHA256_RE = /^[a-f0-9]{64}$/i;
+const RELEASE_STORAGE_DIR = process.env.RELEASE_STORAGE_DIR || path.join(process.cwd(), 'release_storage');
+const PUBLIC_BASE_URL = String(process.env.PUBLIC_BASE_URL || '').replace(/\/$/, '');
 
 function versionParts(value) {
   const core = String(value || '0.0.0').split(/[+-]/, 1)[0];
@@ -3986,16 +4813,29 @@ function compareVersions(leftValue, rightValue) {
   return 0;
 }
 
-function releaseToMerkaUpdate(row) {
+function releaseToMerkaUpdate(row, req) {
+  let downloadUrl = row.download_url == null ? '' : String(row.download_url);
+  if (row.artifact_path) {
+    if (!PUBLIC_BASE_URL) throw new Error('PUBLIC_BASE_URL is required for managed update artifacts');
+    const artifactToken = signPublisherJwt(
+      { token_type: 'artifact_download', release_id: String(row.id), installation_id: req.installationUuid },
+      { issuer: PUBLISHER_ISSUER, expiresIn: '30m', subject: `artifact:${row.id}` },
+    );
+    downloadUrl = `${PUBLIC_BASE_URL}/api/v1/update-artifacts/${row.id}?token=${encodeURIComponent(artifactToken)}`;
+  }
   return {
+    release_id: Number(row.id),
     version: String(row.version),
     canal: String(row.channel),
     fecha_publicacion: String(row.published_at),
-    url_descarga: String(row.download_url),
+    url_descarga: downloadUrl,
     tamano_bytes: Number(row.size_bytes),
-    sha256: String(row.sha256).toLowerCase(),
+    sha256: String(row.sha256 || '').toLowerCase(),
     notas: row.notes == null ? '' : String(row.notes),
     obligatoria: Number(row.mandatory || 0) === 1 || row.mandatory === true,
+    product_family: String(row.product_family || 'ALL'),
+    release_type: String(row.release_type || 'release'),
+    rollback_version: row.rollback_version || null,
   };
 }
 
@@ -4008,19 +4848,89 @@ app.get('/api/v1/updates/check', validateClientToken, async (req, res) => {
     if (!installationId || installationId !== req.installationUuid) {
       return publicError(res, 403, 'Installation does not match authenticated token');
     }
+    const requestedReleaseIdRaw = String(req.query.release_id || '').trim();
+    const requestedReleaseId = requestedReleaseIdRaw
+      ? Number.parseInt(requestedReleaseIdRaw, 10)
+      : null;
+
+    if (
+      requestedReleaseIdRaw &&
+      (!Number.isInteger(requestedReleaseId) || requestedReleaseId <= 0)
+    ) {
+      return publicError(res, 400, 'Invalid release_id');
+    }
+
+    if (requestedReleaseId) {
+      const pendingCommands = await pool.query(
+        `SELECT id,action,params_json
+         FROM cc_commands
+         WHERE installation_uuid=$1
+           AND status='pending'
+           AND action IN ('forzar_actualizacion','aplicar_hotfix','rollback_actualizacion')
+         ORDER BY id DESC
+         LIMIT 100`,
+        [req.installationUuid],
+      );
+
+      const authorized = pendingCommands.rows.some((row) => {
+        try {
+          const params = JSON.parse(row.params_json || '{}');
+          return String(params.release_id || '') === String(requestedReleaseId);
+        } catch (_) {
+          return false;
+        }
+      });
+
+      if (!authorized) {
+        return publicError(
+          res,
+          403,
+          'Release is not authorized by a pending command for this installation',
+        );
+      }
+    }
+
+    const releaseSelector = requestedReleaseId
+      ? 'id=$1'
+      : 'LOWER(channel)=$1';
+
     const result = await pool.query(
-      `SELECT id,version,channel,status,published_at,download_url,size_bytes,sha256,notes,mandatory
+      `SELECT id,version,channel,status,published_at,download_url,size_bytes,sha256,notes,mandatory,
+              product_family,release_type,rollback_version,min_client_version,min_free_mb,rollout_pct,artifact_path,artifact_name,supported_os_json,supported_arch_json
        FROM cc_releases
-       WHERE LOWER(channel)=$1 AND LOWER(status)='published'
-         AND download_url IS NOT NULL AND sha256 IS NOT NULL AND size_bytes IS NOT NULL
-       ORDER BY published_at DESC LIMIT 200`,
-      [channel],
+       WHERE ${releaseSelector}
+         AND LOWER(status)='published'
+         AND sha256 IS NOT NULL
+         AND size_bytes IS NOT NULL
+       ORDER BY published_at DESC
+       LIMIT 200`,
+      [requestedReleaseId ?? channel],
     );
+    const installState = (await pool.query(`SELECT i.free_disk_mb,i.os,i.architecture,c.product_family FROM cc_installations i JOIN cc_clients c ON c.id=i.client_id WHERE i.uuid=$1`, [req.installationUuid])).rows[0] || {};
+    const family = normalizeProductFamily(installState.product_family || req.clientAuth?.product_family || req.clientAuth?.pf || 'COMMERCIAL');
     const candidate = result.rows
-      .filter((row) => compareVersions(row.version, version) > 0)
+      .filter((row) =>
+        requestedReleaseId
+          ? Number(row.id) === requestedReleaseId
+          : compareVersions(row.version, version) > 0
+      )
+      .filter((row) => normalizeFleetProductFamily(row.product_family) === 'ALL' || normalizeFleetProductFamily(row.product_family) === family)
+      .filter((row) => !row.min_client_version || compareVersions(version, row.min_client_version) >= 0)
+      .filter((row) => installState.free_disk_mb == null || Number(installState.free_disk_mb) >= Number(row.min_free_mb || 0))
+      .filter((row) => {
+        const allowed = safeParseJson(row.supported_os_json, []);
+        const actual = String(installState.os || '').toLowerCase();
+        return !Array.isArray(allowed) || allowed.length === 0 || allowed.some((v) => actual.includes(String(v).toLowerCase()));
+      })
+      .filter((row) => {
+        const allowed = safeParseJson(row.supported_arch_json, []);
+        return !Array.isArray(allowed) || allowed.length === 0 || allowed.map((v) => String(v).toLowerCase()).includes(String(installState.architecture || '').toLowerCase());
+      })
+      .filter((row) => isInRollout(req.installationUuid, row.id, row.rollout_pct ?? 100))
+      .filter((row) => Boolean(row.artifact_path) || /^https:\/\//i.test(String(row.download_url || '')))
       .sort((a, b) => compareVersions(b.version, a.version))[0];
     if (!candidate) return res.json({ disponible: false, version_actual: version });
-    const update = releaseToMerkaUpdate(candidate);
+    const update = releaseToMerkaUpdate(candidate, req);
     if (!/^https:\/\//i.test(update.url_descarga) || !SHA256_RE.test(update.sha256) || !Number.isFinite(update.tamano_bytes) || update.tamano_bytes <= 0) {
       return publicError(res, 503, 'Published update metadata is incomplete or unsafe');
     }
@@ -4050,7 +4960,7 @@ app.get('/api/v1/updates', validateAdminAuth, requirePermission('read'), async (
     if (channel) { params.push(channel); where = `WHERE LOWER(channel)=$${params.length}`; }
     params.push(limit);
     const result = await pool.query(
-      `SELECT id,version,channel,status,pending_installs,published_at,download_url,sha256,size_bytes,notes,mandatory
+      `SELECT id,version,channel,status,pending_installs,published_at,download_url,sha256,size_bytes,notes,mandatory,product_family,release_type,rollback_version,min_client_version,min_free_mb,rollout_pct,artifact_name,artifact_uploaded_at,supported_os_json,supported_arch_json
        FROM cc_releases ${where} ORDER BY published_at DESC LIMIT $${params.length}`,
       params,
     );
@@ -4072,22 +4982,118 @@ app.post('/api/v1/updates', validateAdminAuth, requireRole('admin'), async (req,
     const mandatory = mandatoryRaw === true || Number(mandatoryRaw) === 1;
     const status = String(req.body?.status || 'published').trim().toLowerCase();
     const publishedAt = String(req.body?.fecha_publicacion ?? req.body?.published_at ?? new Date().toISOString());
+    const productFamily = normalizeFleetProductFamily(req.body?.product_family ?? req.body?.productFamily ?? 'ALL');
+    const releaseType = String(req.body?.release_type || 'release').trim().toLowerCase();
+    const rollbackVersion = req.body?.rollback_version ? String(req.body.rollback_version).trim() : null;
+    const minClientVersion = req.body?.min_client_version ? String(req.body.min_client_version).trim() : null;
+    const minFreeMb = Math.max(0, Number.parseInt(String(req.body?.min_free_mb ?? '500'), 10) || 500);
+    const rolloutPct = Math.max(0, Math.min(100, Number.parseInt(String(req.body?.rollout_pct ?? '100'), 10) || 100));
+    const supportedOs = Array.isArray(req.body?.supported_os) ? req.body.supported_os.map((v) => String(v).trim().toLowerCase()).filter(Boolean).slice(0, 30) : [];
+    const supportedArch = Array.isArray(req.body?.supported_arch) ? req.body.supported_arch.map((v) => String(v).trim().toLowerCase()).filter(Boolean).slice(0, 30) : [];
     if (!/^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/.test(version)) return publicError(res, 400, 'Invalid semantic version');
     if (!UPDATE_CHANNELS.has(channel)) return publicError(res, 400, 'Invalid update channel');
     if (!['draft','published','disabled'].includes(status)) return publicError(res, 400, 'Invalid update status');
-    if (!/^https:\/\//i.test(downloadUrl)) return publicError(res, 400, 'Update URL must use HTTPS');
-    if (!Number.isFinite(size) || size <= 0) return publicError(res, 400, 'Invalid update size');
-    if (!SHA256_RE.test(sha256)) return publicError(res, 400, 'Invalid SHA-256');
+    if (downloadUrl && !/^https:\/\//i.test(downloadUrl)) return publicError(res, 400, 'Update URL must use HTTPS');
+    if (status === 'published' && !downloadUrl) return publicError(res, 400, 'Published updates require an HTTPS URL or a managed artifact upload');
+    if (status === 'published' && (!Number.isFinite(size) || size <= 0)) return publicError(res, 400, 'Invalid update size');
+    if (status === 'published' && !SHA256_RE.test(sha256)) return publicError(res, 400, 'Invalid SHA-256');
+    if (!['release','hotfix','security'].includes(releaseType)) return publicError(res, 400, 'Invalid release type');
     if (Number.isNaN(Date.parse(publishedAt))) return publicError(res, 400, 'Invalid publication date');
     const result = await pool.query(
       `INSERT INTO cc_releases
-       (version,channel,status,pending_installs,published_at,download_url,sha256,size_bytes,notes,mandatory)
-       VALUES($1,$2,$3,0,$4,$5,$6,$7,$8,$9) RETURNING *`,
-      [version, channel, status, publishedAt, downloadUrl, sha256, size, String(notes).slice(0, 20000), mandatory ? 1 : 0],
+       (version,channel,status,pending_installs,published_at,download_url,sha256,size_bytes,notes,mandatory,product_family,release_type,rollback_version,min_client_version,min_free_mb,rollout_pct,supported_os_json,supported_arch_json)
+       VALUES($1,$2,$3,0,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17) RETURNING *`,
+      [version, channel, status, publishedAt, downloadUrl || null, SHA256_RE.test(sha256) ? sha256 : null, Number.isFinite(size) && size > 0 ? size : null, String(notes).slice(0, 20000), mandatory ? 1 : 0, productFamily, releaseType, rollbackVersion, minClientVersion, minFreeMb, rolloutPct, JSON.stringify(supportedOs), JSON.stringify(supportedArch)],
     );
     return res.status(201).json({ success: true, update: result.rows[0] });
   } catch (error) {
     return serverError(res, 'Create update failed', error);
+  }
+});
+
+
+app.put('/api/v1/updates/:id', validateAdminAuth, requireRole('admin'), async (req, res) => {
+  try {
+    const id = Number.parseInt(req.params.id, 10);
+    if (!Number.isInteger(id) || id <= 0) return publicError(res, 400, 'Invalid update id');
+    const current = (await pool.query('SELECT * FROM cc_releases WHERE id=$1', [id])).rows[0];
+    if (!current) return publicError(res, 404, 'Update not found');
+    const status = String(req.body?.status ?? current.status).toLowerCase();
+    const channel = String(req.body?.channel ?? req.body?.canal ?? current.channel).toLowerCase();
+    const productFamily = normalizeFleetProductFamily(req.body?.product_family ?? current.product_family);
+    const releaseType = String(req.body?.release_type ?? current.release_type ?? 'release').toLowerCase();
+    const rolloutPct = Math.max(0, Math.min(100, Number.parseInt(String(req.body?.rollout_pct ?? current.rollout_pct ?? 100), 10) || 100));
+    const minFreeMb = Math.max(0, Number.parseInt(String(req.body?.min_free_mb ?? current.min_free_mb ?? 500), 10) || 0);
+    const downloadUrl = String(req.body?.download_url ?? req.body?.url_descarga ?? current.download_url ?? '').trim();
+    const sha256 = String(req.body?.sha256 ?? current.sha256 ?? '').trim().toLowerCase();
+    const sizeBytes = Number.parseInt(String(req.body?.size_bytes ?? req.body?.tamano_bytes ?? current.size_bytes ?? 0), 10);
+    const currentOs = safeParseJson(current.supported_os_json, []);
+    const currentArch = safeParseJson(current.supported_arch_json, []);
+    const supportedOs = Array.isArray(req.body?.supported_os) ? req.body.supported_os.map((v) => String(v).trim().toLowerCase()).filter(Boolean).slice(0, 30) : (Array.isArray(currentOs) ? currentOs : []);
+    const supportedArch = Array.isArray(req.body?.supported_arch) ? req.body.supported_arch.map((v) => String(v).trim().toLowerCase()).filter(Boolean).slice(0, 30) : (Array.isArray(currentArch) ? currentArch : []);
+    if (!UPDATE_CHANNELS.has(channel)) return publicError(res, 400, 'Invalid update channel');
+    if (!['draft','published','disabled'].includes(status)) return publicError(res, 400, 'Invalid update status');
+    if (!['release','hotfix','security'].includes(releaseType)) return publicError(res, 400, 'Invalid release type');
+    if (downloadUrl && !/^https:\/\//i.test(downloadUrl)) return publicError(res, 400, 'Update URL must use HTTPS');
+    const hasManagedArtifact = Boolean(current.artifact_path);
+    if (status === 'published' && !hasManagedArtifact && !downloadUrl) return publicError(res, 409, 'Publish requires HTTPS URL or managed artifact');
+    if (status === 'published' && (!SHA256_RE.test(sha256) || !Number.isFinite(sizeBytes) || sizeBytes <= 0)) return publicError(res, 409, 'Publish requires SHA-256 and artifact size');
+    const result = await pool.query(`UPDATE cc_releases SET channel=$1,status=$2,download_url=$3,sha256=$4,size_bytes=$5,notes=$6,mandatory=$7,
+      product_family=$8,release_type=$9,rollback_version=$10,min_client_version=$11,min_free_mb=$12,rollout_pct=$13,supported_os_json=$14,supported_arch_json=$15,published_at=CASE WHEN $2='published' THEN NOW() ELSE published_at END
+      WHERE id=$16 RETURNING *`, [
+      channel,status,downloadUrl || null,sha256 || null,sizeBytes || null,String(req.body?.notes ?? req.body?.notas ?? current.notes ?? '').slice(0,20000),
+      (req.body?.mandatory ?? req.body?.obligatoria ?? current.mandatory) === true || Number(req.body?.mandatory ?? req.body?.obligatoria ?? current.mandatory)===1 ? 1:0,
+      productFamily,releaseType,req.body?.rollback_version ?? current.rollback_version,req.body?.min_client_version ?? current.min_client_version,minFreeMb,rolloutPct,JSON.stringify(supportedOs),JSON.stringify(supportedArch),id,
+    ]);
+    return res.json({ success: true, update: result.rows[0] });
+  } catch (error) { return serverError(res, 'Update metadata failed', error); }
+});
+
+app.put('/api/v1/updates/:id/artifact', validateAdminAuth, requireRole('admin'), express.raw({ type: 'application/octet-stream', limit: process.env.RELEASE_UPLOAD_LIMIT || '1gb' }), async (req, res) => {
+  try {
+    const id = Number.parseInt(req.params.id, 10);
+    if (!Number.isInteger(id) || id <= 0) return publicError(res, 400, 'Invalid update id');
+    const release = (await pool.query('SELECT id,version FROM cc_releases WHERE id=$1', [id])).rows[0];
+    if (!release) return publicError(res, 404, 'Update not found');
+    if (!Buffer.isBuffer(req.body) || req.body.length === 0) return publicError(res, 400, 'Binary artifact body is required');
+    const originalName = String(req.query.filename || `MerkaERP-${release.version}.bin`).replace(/[^a-zA-Z0-9._-]/g, '_').slice(0,180);
+    await fs.promises.mkdir(RELEASE_STORAGE_DIR, { recursive: true });
+    const finalName = `${id}-${Date.now()}-${originalName}`;
+    const finalPath = path.join(RELEASE_STORAGE_DIR, finalName);
+    await fs.promises.writeFile(finalPath, req.body, { flag: 'wx' });
+    const sha256 = crypto.createHash('sha256').update(req.body).digest('hex');
+    const publish = String(req.query.publish || '').toLowerCase() === 'true' || String(req.query.publish || '') === '1';
+    const previous = (await pool.query('SELECT artifact_path FROM cc_releases WHERE id=$1', [id])).rows[0]?.artifact_path;
+    const result = await pool.query(`UPDATE cc_releases SET artifact_path=$1,artifact_name=$2,artifact_uploaded_at=NOW(),sha256=$3,size_bytes=$4,
+      download_url=NULL,status=CASE WHEN $5 THEN 'published' ELSE status END,published_at=CASE WHEN $5 THEN NOW() ELSE published_at END WHERE id=$6 RETURNING *`,
+      [finalPath, originalName, sha256, req.body.length, publish, id]);
+    if (previous && previous !== finalPath && path.resolve(previous).startsWith(path.resolve(RELEASE_STORAGE_DIR))) {
+      await fs.promises.unlink(previous).catch(() => {});
+    }
+    return res.json({ success: true, update: result.rows[0], sha256, size_bytes: req.body.length, managed_artifact: true });
+  } catch (error) { return serverError(res, 'Artifact upload failed', error); }
+});
+
+app.get('/api/v1/update-artifacts/:id', async (req, res) => {
+  try {
+    const id = Number.parseInt(req.params.id, 10);
+    const token = String(req.query.token || '');
+    if (!Number.isInteger(id) || id <= 0 || !token) return publicError(res, 401, 'Artifact download token required');
+    const decoded = verifyPublisherJwt(token, { issuer: PUBLISHER_ISSUER });
+    if (decoded.token_type !== 'artifact_download' || String(decoded.release_id) !== String(id)) return publicError(res, 403, 'Invalid artifact token');
+    const release = (await pool.query(`SELECT artifact_path,artifact_name,size_bytes,sha256,status FROM cc_releases WHERE id=$1`, [id])).rows[0];
+    if (!release || release.status !== 'published' || !release.artifact_path) return publicError(res, 404, 'Published artifact not found');
+    const resolved = path.resolve(release.artifact_path);
+    if (!resolved.startsWith(path.resolve(RELEASE_STORAGE_DIR))) return publicError(res, 403, 'Invalid artifact path');
+    await fs.promises.access(resolved, fs.constants.R_OK);
+    res.setHeader('Content-Type', 'application/octet-stream');
+    res.setHeader('Content-Length', String(release.size_bytes));
+    res.setHeader('X-Artifact-SHA256', String(release.sha256));
+    res.setHeader('Content-Disposition', `attachment; filename="${String(release.artifact_name || `MerkaERP-${id}.bin`).replace(/"/g,'')}"`);
+    return fs.createReadStream(resolved).pipe(res);
+  } catch (error) {
+    if (error?.name === 'TokenExpiredError' || error?.name === 'JsonWebTokenError') return publicError(res, 401, 'Invalid or expired artifact token');
+    return serverError(res, 'Artifact download failed', error);
   }
 });
 
@@ -4223,16 +5229,89 @@ async function runServerMaintenance() {
     const lock = await client.query('SELECT pg_try_advisory_lock($1) AS locked', [lockKey]);
     if (!lock.rows[0]?.locked) return;
     const now = new Date().toISOString();
-    await client.query(
-      `UPDATE cc_licenses SET status='expired', updated_at=$1
-       WHERE LOWER(status) IN ('active','trial','activo') AND expires_at::timestamptz <= NOW()`,
+    await processDueScheduledDeployments().catch((error) => console.error('Scheduled deployment processing failed:', error.message));
+    const expiredLicenses = await client.query(
+      `UPDATE cc_licenses SET status='expired',status_reason=COALESCE(status_reason,'Vencimiento automático'),updated_at=$1
+       WHERE LOWER(status) IN ('active','trial','activo') AND expires_at::timestamptz <= NOW()
+       RETURNING id,client_id`,
       [now],
     );
-    await client.query(
+    if (expiredLicenses.rowCount > 0) {
+      await client.query(
+        `UPDATE cc_installations i SET blocked=1,connected=0,status='blocked',license_status='expired',
+         block_reason='Licencia: vencida',updated_at=$1
+         FROM cc_licenses l WHERE i.license_id=l.id AND l.status='expired' AND i.status<>'disabled'`,
+        [now],
+      );
+    }
+    const expiringLicenses = await client.query(
+      `SELECT id,client_id,expires_at FROM cc_licenses
+       WHERE status IN ('active','trial') AND expires_at::timestamptz > NOW() AND expires_at::timestamptz <= NOW() + INTERVAL '14 days'`,
+    );
+    const expiringIds = new Set(expiringLicenses.rows.map((row) => String(row.id)));
+    for (const row of expiringLicenses.rows) {
+      const days = Math.max(0, Math.ceil((new Date(row.expires_at).getTime() - Date.now()) / 86400000));
+      await setOperationalAlert({
+        key: `license-expiry:${row.id}`,
+        clientId: row.client_id,
+        priority: days <= 3 ? 'alta' : 'media',
+        category: 'licensing',
+        message: `Licencia #${row.id} vence en ${days} día(s)`,
+        details: { license_id: row.id, expires_at: row.expires_at, days_remaining: days },
+        active: true,
+      });
+    }
+    const existingExpiryAlerts = await client.query(
+      `SELECT alert_key FROM cc_alerts WHERE alert_key LIKE 'license-expiry:%' AND LOWER(status) IN ('active','activa','open')`,
+    ).catch(() => ({ rows: [] }));
+    for (const row of existingExpiryAlerts.rows) {
+      const licenseId = String(row.alert_key || '').split(':')[1] || '';
+      if (!expiringIds.has(licenseId)) await setOperationalAlert({ key: row.alert_key, active: false });
+    }
+    const stale = await client.query(
       `UPDATE cc_installations SET connected=0, updated_at=$1
-       WHERE connected<>0 AND COALESCE(last_heartbeat,last_seen)::timestamptz < NOW() - INTERVAL '10 minutes'`,
+       WHERE connected<>0 AND COALESCE(last_heartbeat,last_seen)::timestamptz < NOW() - INTERVAL '10 minutes'
+       RETURNING uuid,client_id,last_seen,last_heartbeat`,
       [now],
     );
+    for (const row of stale.rows) {
+      await setOperationalAlert({
+        key: `offline:${row.uuid}`,
+        clientId: row.client_id,
+        installationId: row.uuid,
+        priority: 'alta',
+        category: 'connectivity',
+        message: 'Instalación sin heartbeat por más de 10 minutos',
+        details: { last_seen: row.last_seen, last_heartbeat: row.last_heartbeat },
+        active: true,
+      });
+    }
+    const backOnline = await client.query(
+      `SELECT uuid FROM cc_installations WHERE connected=1 AND COALESCE(last_heartbeat,last_seen)::timestamptz >= NOW() - INTERVAL '10 minutes'`,
+    );
+    for (const row of backOnline.rows) {
+      await setOperationalAlert({ key: `offline:${row.uuid}`, active: false });
+    }
+    await client.query(
+      `UPDATE cc_commands SET status='expired',ack_at=COALESCE(ack_at,$1),result=COALESCE(result,'Command expired before polling')
+       WHERE status='pending' AND expires_at IS NOT NULL AND expires_at::timestamptz <= NOW()`,
+      [now],
+    );
+    await client.query(
+      `UPDATE cc_deployment_targets t SET status='failed',last_error='Command expired before installation polled it',updated_at=NOW()
+       FROM cc_commands c WHERE t.command_id=c.id AND t.status='queued' AND c.status='expired'`,
+    ).catch(() => {});
+    await client.query(
+      `UPDATE cc_deployments d SET success_count=s.success,failed_count=s.failed,
+       status=CASE WHEN s.remaining=0 THEN CASE WHEN s.failed>0 THEN 'completed_with_errors' ELSE 'completed' END ELSE d.status END,
+       completed_at=CASE WHEN s.remaining=0 THEN COALESCE(d.completed_at,NOW()) ELSE d.completed_at END
+       FROM (
+         SELECT deployment_id,COUNT(*) FILTER(WHERE status='completed')::int success,
+                COUNT(*) FILTER(WHERE status='failed')::int failed,
+                COUNT(*) FILTER(WHERE status IN ('pending','queued'))::int remaining
+         FROM cc_deployment_targets GROUP BY deployment_id
+       ) s WHERE d.id=s.deployment_id AND d.status IN ('running','queued','paused')`,
+    ).catch(() => {});
     await client.query('DELETE FROM cc_sessions WHERE expires_at::timestamptz <= NOW()');
     await client.query(
       `UPDATE cc_remote_access_sessions SET status='expired', ended_at=COALESCE(ended_at,$1)

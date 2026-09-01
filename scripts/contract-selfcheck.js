@@ -43,10 +43,12 @@ function run() {
   assert.strictEqual(fingerprint(PINNED_PUBLIC_KEY), PINNED_FINGERPRINT, 'Pinned RS256 fingerprint changed');
 
   const expectedActions = [
-    'forzar_respaldo', 'reiniciar_sesiones', 'actualizar_modulos', 'enviar_log',
-    'mensaje_admin', 'bloquear_instalacion', 'activar_instalacion',
-    'forzar_actualizacion', 'rollback_actualizacion', 'reiniciar',
-    'forzar_sincronizacion', 'actualizar_licencia', 'solicitar_acceso_remoto',
+    'forzar_respaldo', 'restaurar_respaldo', 'reiniciar_sesiones', 'actualizar_modulos', 'enviar_log',
+    'mensaje_admin', 'bloquear_instalacion', 'activar_instalacion', 'entrar_mantenimiento', 'salir_mantenimiento',
+    'forzar_actualizacion', 'rollback_actualizacion', 'aplicar_hotfix', 'reiniciar',
+    'forzar_sincronizacion', 'actualizar_licencia', 'aplicar_configuracion', 'aplicar_feature_flags',
+    'run_diagnostics', 'collect_diagnostics', 'verificar_base_datos', 'reconstruir_indices', 'limpiar_cache',
+    'ejecutar_reparacion', 'solicitar_acceso_remoto',
   ].sort();
   assert.deepStrictEqual([...ALLOWED_REMOTE_ACTIONS].sort(), expectedActions, 'Remote action contract drift');
 
@@ -79,6 +81,7 @@ function run() {
 
   const serverPath = path.join(__dirname, '..', 'src', 'server.js');
   const server = fs.readFileSync(serverPath, 'utf8');
+  const fleetRoutes = fs.readFileSync(path.join(__dirname, '..', 'src', 'fleet_routes.js'), 'utf8');
   const requiredRoutes = [
     "app.post('/api/v1/licenses/activate'",
     "app.post('/api/v1/licenses/validate'",
@@ -90,6 +93,11 @@ function run() {
     "app.post('/api/v1/installations/sync/push'",
   ];
   for (const route of requiredRoutes) assert.ok(server.includes(route), `Missing MerkaERP route: ${route}`);
+  assert.ok(!server.includes('CONTROL_CENTER_DISABLED_ACTIONS'), 'Stale disabled-action reference would break remote command queueing');
+  assert.ok(server.includes("app.put('/api/v1/updates/:id/artifact'"), 'Managed release artifact upload route missing');
+  assert.ok(server.includes("app.get('/api/v1/update-artifacts/:id'"), 'Managed release artifact download route missing');
+  assert.ok(fleetRoutes.includes("app.post('/api/v1/deployments/:id/rollback'"), 'Rollback deployment route missing');
+  for (const route of ["app.get('/api/v1/agent/bootstrap'", "app.post('/api/v1/agent/capabilities'", "app.post('/api/v1/errors/report'", "app.post('/api/v1/agent/artifacts'"]) assert.ok(fleetRoutes.includes(route), `Missing fleet route: ${route}`);
   assert.ok(server.includes("Legacy direct replication is disabled; use the MerkaERP transport outbox contract"), 'Legacy direct replication must stay disabled');
 
   console.log('Control Center ↔ MerkaERP 1.2.1+5 contract self-check: PASS');
