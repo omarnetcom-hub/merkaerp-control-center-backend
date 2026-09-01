@@ -1,5 +1,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
 
 process.env.DATABASE_URL ||= 'postgresql://test:test@127.0.0.1:5432/test';
 process.env.DATABASE_SSL = 'false';
@@ -53,4 +55,19 @@ test('critical MerkaERP Agent v2 routes are registered', async () => {
   await expectProtectedRoute('POST', '/api/v1/agent/capabilities', {});
   await expectProtectedRoute('POST', '/api/v1/errors/report', {});
   await expectProtectedRoute('POST', '/api/v1/agent/artifacts', {});
+});
+
+test('offline activation revocation keeps legacy TEXT timestamps type-safe', () => {
+  const sourceFiles = ['../src/server.js', '../src/fleet_routes.js'];
+  for (const relativePath of sourceFiles) {
+    const source = fs.readFileSync(path.join(__dirname, relativePath), 'utf8');
+    const offlineUpdates = source
+      .split('\n')
+      .filter((line) => line.includes('cc_offline_activations') && line.includes('revoked_at=COALESCE'));
+    assert.ok(offlineUpdates.length > 0, `${relativePath} must revoke offline activations`);
+    for (const update of offlineUpdates) {
+      assert.match(update, /CURRENT_TIMESTAMP::text/);
+      assert.doesNotMatch(update, /COALESCE\([^)]*,\s*NOW\(\)\)/);
+    }
+  }
 });

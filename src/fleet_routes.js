@@ -791,7 +791,7 @@ function registerFleetRoutes({
           [`Licencia: ${lifecycleReason}`, newStatus, id],
         );
         await tx.query(
-          `UPDATE cc_offline_activations SET revoked_at=COALESCE(revoked_at,NOW()),revoked_reason=COALESCE(revoked_reason,$1) WHERE license_id=$2`,
+          `UPDATE cc_offline_activations SET revoked_at=COALESCE(revoked_at,CURRENT_TIMESTAMP::text),revoked_reason=COALESCE(revoked_reason,$1) WHERE license_id=$2`,
           [lifecycleReason, id],
         );
       }
@@ -875,7 +875,7 @@ function registerFleetRoutes({
           [id, reason || 'Cliente archivado/cancelado'],
         );
         await tx.query(
-          `UPDATE cc_offline_activations oa SET revoked_at=COALESCE(oa.revoked_at,NOW()),revoked_reason=COALESCE(oa.revoked_reason,$2)
+          `UPDATE cc_offline_activations oa SET revoked_at=COALESCE(oa.revoked_at,CURRENT_TIMESTAMP::text),revoked_reason=COALESCE(oa.revoked_reason,$2)
            WHERE oa.license_id IN (SELECT l.id FROM cc_licenses l WHERE l.client_id=$1)`,
           [id, reason || 'Cliente archivado/cancelado'],
         );

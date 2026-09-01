@@ -3684,7 +3684,7 @@ app.delete('/api/v1/licenses/:id', validateAdminAuth, requirePermission('license
       [id],
     );
     await tx.query(
-      `UPDATE cc_offline_activations SET revoked_at=COALESCE(revoked_at,NOW()), revoked_reason=COALESCE(revoked_reason,'Licencia revocada') WHERE license_id=$1`,
+      `UPDATE cc_offline_activations SET revoked_at=COALESCE(revoked_at,CURRENT_TIMESTAMP::text), revoked_reason=COALESCE(revoked_reason,'Licencia revocada') WHERE license_id=$1`,
       [id],
     );
     await tx.query('COMMIT');
@@ -4008,7 +4008,7 @@ app.delete('/api/v1/clients/:id', validateAdminAuth, requirePermission('crm:writ
       [id],
     );
     await tx.query(
-      `UPDATE cc_offline_activations oa SET revoked_at=COALESCE(oa.revoked_at,NOW()), revoked_reason=COALESCE(oa.revoked_reason,'Cliente desactivado')
+      `UPDATE cc_offline_activations oa SET revoked_at=COALESCE(oa.revoked_at,CURRENT_TIMESTAMP::text), revoked_reason=COALESCE(oa.revoked_reason,'Cliente desactivado')
        FROM cc_licenses l WHERE oa.license_id=l.id AND l.client_id=$1`,
       [id],
     );
