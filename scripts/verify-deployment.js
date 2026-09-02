@@ -42,6 +42,7 @@ async function main() {
     ['POST', '/api/v1/clients/1/lifecycle', { action: 'suspend' }],
     ['DELETE', '/api/v1/licenses/1'],
     ['DELETE', '/api/v1/clients/1'],
+    ['POST', '/api/v1/clients/1/permanent-delete', {}],
     ['GET', '/api/v1/plans'],
     ['GET', '/api/v1/fleet/overview'],
     ['POST', '/api/v1/installations/test/diagnostics', {}],

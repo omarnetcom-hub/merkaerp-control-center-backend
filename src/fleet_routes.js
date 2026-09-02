@@ -809,7 +809,7 @@ function registerFleetRoutes({
       const id = intId(req.params.id);
       if (!id) return publicError(res, 400, 'Invalid client id');
       const action = String(req.body?.action || '').toLowerCase();
-      if (!['suspend', 'reactivate', 'archive'].includes(action)) return publicError(res, 400, 'action must be suspend, reactivate or archive');
+      if (!['suspend', 'reactivate', 'archive', 'restore'].includes(action)) return publicError(res, 400, 'action must be suspend, reactivate, archive or restore');
       const reason = String(req.body?.reason || '').trim().slice(0, 1000);
       await tx.query('BEGIN');
       const current = (await tx.query(`SELECT id,status FROM cc_clients WHERE id=$1 FOR UPDATE`, [id])).rows[0];
@@ -818,14 +818,18 @@ function registerFleetRoutes({
         return publicError(res, 404, 'Client not found');
       }
       const currentStatus = normalizeLicenseStatus(current.status);
-      const status = action === 'reactivate' ? 'active' : action === 'suspend' ? 'suspended' : 'cancelled';
+      const status = ['reactivate', 'restore'].includes(action) ? 'active' : action === 'suspend' ? 'suspended' : 'cancelled';
       if (currentStatus === status) {
         await tx.query('ROLLBACK');
         return res.json({ success: true, id, status, previous_status: current.status, unchanged: true });
       }
-      if (currentStatus === 'cancelled') {
+      if (currentStatus === 'cancelled' && action !== 'restore') {
         await tx.query('ROLLBACK');
-        return publicError(res, 409, 'An archived client is immutable; create a new commercial relationship instead');
+        return publicError(res, 409, 'Use la acción recuperar para un cliente archivado. Sus licencias anteriores no se reactivarán.');
+      }
+      if (action === 'restore' && currentStatus !== 'cancelled') {
+        await tx.query('ROLLBACK');
+        return publicError(res, 409, 'Solo se pueden recuperar clientes archivados.');
       }
       if (action === 'suspend' && !['active', 'trial'].includes(currentStatus)) {
         await tx.query('ROLLBACK');
@@ -841,7 +845,7 @@ function registerFleetRoutes({
          updated_at=NOW() WHERE id=$3`,
         [status, reason || null, id],
       );
-      if (status === 'active') {
+      if (action === 'reactivate') {
         // Reactivation restores only licenses suspended with the client. Revoked
         // licenses remain immutable and require a new issuance.
         await tx.query(
@@ -868,7 +872,7 @@ function registerFleetRoutes({
            WHERE client_id=$1 AND status<>'disabled'`,
           [id, `Cliente: ${reason || 'suspendido'}`],
         );
-      } else {
+      } else if (status === 'cancelled') {
         await tx.query(
           `UPDATE cc_licenses SET status='revoked',status_reason=$2,updated_at=NOW(),revoked_at=NOW(),offline_token=NULL
            WHERE client_id=$1 AND status<>'revoked'`,
@@ -885,6 +889,11 @@ function registerFleetRoutes({
           [id, `Cliente: ${reason || 'archivado/cancelado'}`],
         );
       }
+      // Restoring the account deliberately skips ALL license, token and device
+      // updates; a new purchase requires a separately issued license.
+      await tx.query(`INSERT INTO cc_audit(actor,action,entity,detail,created_at)
+        VALUES ($1,$2,'client',$3,$4)`,
+      [req.user?.username || 'admin', `CLIENT_${action.toUpperCase()}`, `client_id=${id}; ${currentStatus}->${status}; ${reason}`, new Date().toISOString()]);
       await tx.query('COMMIT');
       return res.json({ success: true, id, status, previous_status: current.status });
     } catch (error) {

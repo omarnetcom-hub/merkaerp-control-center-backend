@@ -45,6 +45,7 @@ test('critical administrator routes are registered before the API 404 handler', 
   await expectProtectedRoute('POST', '/api/v1/clients/1/lifecycle', { action: 'suspend' });
   await expectProtectedRoute('DELETE', '/api/v1/licenses/1');
   await expectProtectedRoute('DELETE', '/api/v1/clients/1');
+  await expectProtectedRoute('POST', '/api/v1/clients/1/permanent-delete', {});
   await expectProtectedRoute('GET', '/api/v1/plans');
   await expectProtectedRoute('GET', '/api/v1/fleet/overview');
   await expectProtectedRoute('POST', '/api/v1/installations/test/diagnostics', {});

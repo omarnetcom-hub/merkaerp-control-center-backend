@@ -27,6 +27,7 @@ const { isAllowedTable: isAllowedSyncTable, isAllowedOperation: isAllowedSyncOpe
 const { majorToMinor, normalizeMinor, moneyFromBody, minorToLegacyNumber } = require('./utils/money');
 const { computeHealthScore, isInRollout, errorSignature, normalizeFleetProductFamily } = require('./fleet_logic');
 const { registerFleetRoutes } = require('./fleet_routes');
+const { findClientConflict, clientConflictResponse, registerClientAccountRoutes } = require('./client_accounts');
 
 const app = express();
 const PORT = process.env.PORT || 8787;
@@ -3393,7 +3394,7 @@ async function saveClient(req, res, idOverride = null) {
   try {
     const id = idOverride ?? req.body.id;
     const name = req.body.name;
-    const nit = req.body.nit;
+    const nit = String(req.body.nit || '').trim();
     const city = req.body.city;
     const country = req.body.country;
     const status = normalizeLicenseStatus(req.body.status || 'active');
@@ -3413,7 +3414,7 @@ async function saveClient(req, res, idOverride = null) {
     const notes = req.body.notes ?? '';
     const contactName = req.body.contactName ?? req.body.contact_name ?? '';
     const contactPhone = req.body.contactPhone ?? req.body.contact_phone ?? '';
-    const contactEmail = req.body.contactEmail ?? req.body.contact_email ?? '';
+    const contactEmail = String(req.body.contactEmail ?? req.body.contact_email ?? '').trim();
     const contactRole = req.body.contactRole ?? req.body.contact_role ?? '';
     const password = req.body.password ?? req.body.client_password ?? '';
     const licenseType = req.body.licenseType ?? req.body.license_type ?? 'SUSCRIPCION';
@@ -3421,20 +3422,8 @@ async function saveClient(req, res, idOverride = null) {
     const productFamily = normalizeProductFamily(req.body.productFamily ?? req.body.product_family ?? 'COMMERCIAL');
 
     if (!name || !plan || !renewalDate) return publicError(res, 400, 'name, plan and renewal_date are required');
-    if (contactEmail) {
-      const duplicateEmail = await pool.query(
-        `SELECT id FROM cc_clients WHERE LOWER(contact_email)=LOWER($1) AND ($2::int IS NULL OR id<>$2::int) LIMIT 1`,
-        [String(contactEmail).trim(), id ? Number(id) : null],
-      );
-      if (duplicateEmail.rowCount > 0) return publicError(res, 409, 'A client already uses this contact email');
-    }
-    if (nit) {
-      const duplicateNit = await pool.query(
-        `SELECT id FROM cc_clients WHERE LOWER(nit)=LOWER($1) AND ($2::int IS NULL OR id<>$2::int) LIMIT 1`,
-        [String(nit).trim(), id ? Number(id) : null],
-      );
-      if (duplicateNit.rowCount > 0) return publicError(res, 409, 'A client already uses this NIT');
-    }
+    const conflict = await findClientConflict(pool, { nit, email: contactEmail, id: id ? Number(id) : null });
+    if (conflict) return res.status(409).json(clientConflictResponse(conflict, normalizeLicenseStatus));
     const passwordHash = password ? await bcrypt.hash(String(password), 12) : null;
 
     if (id) {
@@ -3444,6 +3433,9 @@ async function saveClient(req, res, idOverride = null) {
         return res.status(404).json({ success: false, error: 'Client not found' });
       }
       const existingStatus = normalizeLicenseStatus(existing.rows[0].status);
+      if (existingStatus === 'cancelled') {
+        return publicError(res, 409, 'Recupere al cliente archivado antes de editar su ficha.');
+      }
       if (status !== existingStatus) {
         return publicError(res, 409, 'Use the client lifecycle endpoint to change status');
       }
@@ -3556,6 +3548,14 @@ async function saveLicense(req, res, idOverride = null) {
       return publicError(res, 400, 'max_branches must be between 1 and 10000');
     }
     if (Number.isNaN(Date.parse(expiresAt))) return publicError(res, 400, 'Invalid expires_at');
+
+    if (!id) {
+      const owner = (await pool.query('SELECT status FROM cc_clients WHERE id=$1', [clientId])).rows[0];
+      if (!owner) return publicError(res, 404, 'Cliente no encontrado.');
+      if (!['active', 'trial'].includes(normalizeLicenseStatus(owner.status))) {
+        return publicError(res, 409, 'Recupere o reactive al cliente antes de emitir una nueva licencia.');
+      }
+    }
 
     if (id) {
       const existingLicense = await pool.query('SELECT status,plan_key FROM cc_licenses WHERE id=$1 LIMIT 1', [id]);
@@ -3943,6 +3943,8 @@ app.delete('/api/v1/tickets/:id', validateAdminAuth, requirePermission('tickets:
 });
 
 // GET /api/v1/clients - Obtener todos los clientes
+registerClientAccountRoutes({ app, pool, validateAdminAuth, requireRole, publicError, serverError, normalizeLicenseStatus });
+
 app.get('/api/v1/clients', validateAdminAuth, requirePermission('read'), async (req, res) => {
   try {
     const result = await pool.query(`
